@@ -1,0 +1,37 @@
+[package]
+name = "ympp-comics-library"
+version = "0.0.1"
+description = "YMPP Comics Library Desktop Application"
+authors = ["YMPPLibrary"]
+edition = "2021"
+
+[lib]
+name = "ympp_comics_library_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+walkdir = "2.5"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6.0"
+tokio = { version = "1", features = ["sync", "time", "rt-multi-thread"] }
+rayon = "1.10"
+open = "5.3"
+base64 = "0.22"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
