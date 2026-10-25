@@ -1,6 +1,6 @@
 [package]
 name = "ympp-comics-library"
-version = "0.0.1"
+version = "0.1.0"
 description = "YMPP Comics Library Desktop Application"
 authors = ["YMPPLibrary"]
 edition = "2021"

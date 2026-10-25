@@ -4,6 +4,7 @@ import { useLibraryStore } from '../stores/libraryStore';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
   X,
+  Folder,
   FolderOpen,
   Save,
   MonitorPlay,
@@ -30,6 +31,7 @@ const activeTab = ref<'general' | 'tags'>('general');
 // General settings
 const customViewer = ref(store.settings.custom_viewer_path || '');
 const autoClearNew = ref(store.settings.auto_clear_new_on_open);
+const showFolderNewBadge = ref(store.settings.show_folder_new_badge ?? false);
 const cardSize = ref<CardSizeMode>(store.settings.card_size || 'md');
 const includeFolderTagsInSearch = ref(store.settings.include_folder_tags_in_search ?? false);
 
@@ -91,6 +93,7 @@ async function handleSaveGeneral() {
     thumbnail_size: 480,
     card_size: cardSize.value,
     include_folder_tags_in_search: includeFolderTagsInSearch.value,
+    show_folder_new_badge: showFolderNewBadge.value,
   });
   if (store.mode === 'search') {
     await store.executeSearch();
@@ -167,7 +170,7 @@ async function handleExecuteRebuild() {
 
         <div class="flex items-center gap-2">
           <span class="px-2 py-0.5 rounded-full bg-indigo-950/80 border border-indigo-800/60 text-indigo-300 text-[10px] font-mono font-semibold">
-            v0.0.1
+            v0.1.0
           </span>
           <button
             @click="emit('close')"
@@ -285,6 +288,25 @@ async function handleExecuteRebuild() {
           </label>
         </div>
 
+        <!-- Show Folder NEW Badge -->
+        <div class="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800/80 flex items-start gap-3">
+          <input
+            v-model="showFolderNewBadge"
+            id="show-folder-new"
+            type="checkbox"
+            class="mt-0.5 rounded border-neutral-700 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+          />
+          <label for="show-folder-new" class="cursor-pointer space-y-0.5">
+            <span class="font-semibold text-white flex items-center gap-1.5">
+              <Folder class="w-3.5 h-3.5 text-indigo-400" />
+              폴더 항목에 'NEW' 배지 표시
+            </span>
+            <p class="text-[11px] text-neutral-400">
+              새로 추가된 폴더에도 만화책과 동일하게 'NEW' 배지를 표시합니다. 비활성화 시 폴더에는 NEW 배지가 표시되지 않습니다. (기본값: 꺼짐)
+            </p>
+          </label>
+        </div>
+
         <!-- Include Folder in Search Policy -->
         <div class="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800/80 flex items-start gap-3">
           <input
@@ -340,7 +362,7 @@ async function handleExecuteRebuild() {
         <!-- Build Version Info -->
         <div class="flex items-center justify-between text-[11px] text-neutral-500 pt-3 border-t border-neutral-800/80">
           <span>YMPP Comics Library</span>
-          <span class="font-mono text-neutral-400">빌드 버전: v0.0.1</span>
+          <span class="font-mono text-neutral-400">빌드 버전: v0.1.0</span>
         </div>
       </div>
 
@@ -446,7 +468,7 @@ async function handleExecuteRebuild() {
         <!-- Build Version Info -->
         <div class="flex items-center justify-between text-[11px] text-neutral-500 pt-3 border-t border-neutral-800/80">
           <span>YMPP Comics Library</span>
-          <span class="font-mono text-neutral-400">빌드 버전: v0.0.1</span>
+          <span class="font-mono text-neutral-400">빌드 버전: v0.1.0</span>
         </div>
       </div>
 

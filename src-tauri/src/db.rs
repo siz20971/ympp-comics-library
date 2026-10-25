@@ -59,6 +59,7 @@ impl Database {
                 name TEXT NOT NULL,
                 parent_id INTEGER,
                 rating INTEGER NOT NULL DEFAULT 0,
+                is_new INTEGER NOT NULL DEFAULT 1,
                 last_scanned_at TEXT,
                 UNIQUE(library_id, relative_path),
                 FOREIGN KEY(library_id) REFERENCES libraries(id) ON DELETE CASCADE,
@@ -120,6 +121,13 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
             "#
         )?;
+
+        // Auto-migrate: add is_new column to folders if existing DB
+        let _ = conn.execute("ALTER TABLE folders ADD COLUMN is_new INTEGER NOT NULL DEFAULT 1", []);
+
+        // Create index on migrated folders.is_new column
+        let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_folders_is_new ON folders(is_new)", []);
+
         Ok(())
     }
 
@@ -213,7 +221,7 @@ impl Database {
     pub fn get_folder_by_id(&self, folder_id: i64) -> Result<Option<FolderItem>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, library_id, relative_path, name, parent_id, rating FROM folders WHERE id = ?1"
+            "SELECT id, library_id, relative_path, name, parent_id, rating, is_new FROM folders WHERE id = ?1"
         )?;
         let mut rows = stmt.query(params![folder_id])?;
         if let Some(row) = rows.next()? {
@@ -226,6 +234,7 @@ impl Database {
                 name: row.get(3)?,
                 parent_id: row.get(4)?,
                 rating: row.get(5)?,
+                is_new: row.get(6)?,
                 cover_data_url: None,
                 direct_tags: tags,
             }))
@@ -238,22 +247,22 @@ impl Database {
         let conn = self.conn()?;
         let mut results = Vec::new();
 
-        let row_tuples: Vec<(i64, i64, String, String, Option<i64>, i32)> = match parent_id {
+        let row_tuples: Vec<(i64, i64, String, String, Option<i64>, i32, bool)> = match parent_id {
             Some(pid) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, library_id, relative_path, name, parent_id, rating FROM folders WHERE library_id = ?1 AND parent_id = ?2 ORDER BY name ASC"
+                    "SELECT id, library_id, relative_path, name, parent_id, rating, is_new FROM folders WHERE library_id = ?1 AND parent_id = ?2 ORDER BY name ASC"
                 )?;
                 let rows = stmt.query_map(params![lib_id, pid], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
             None => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, library_id, relative_path, name, parent_id, rating FROM folders WHERE library_id = ?1 AND (parent_id IS NULL OR parent_id = 0) ORDER BY name ASC"
+                    "SELECT id, library_id, relative_path, name, parent_id, rating, is_new FROM folders WHERE library_id = ?1 AND (parent_id IS NULL OR parent_id = 0) ORDER BY name ASC"
                 )?;
                 let rows = stmt.query_map(params![lib_id], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
@@ -322,7 +331,7 @@ impl Database {
             }
         }
 
-        for (id, lib_id, rel_path, name, pid, rating) in row_tuples {
+        for (id, lib_id, rel_path, name, pid, rating, is_new) in row_tuples {
             let tags = tag_map.remove(&id).unwrap_or_default();
             results.push(FolderItem {
                 id,
@@ -331,6 +340,7 @@ impl Database {
                 name,
                 parent_id: pid,
                 rating,
+                is_new,
                 cover_data_url: None,
                 direct_tags: tags,
             });
@@ -539,6 +549,39 @@ impl Database {
         let conn = self.conn()?;
         conn.execute("UPDATE comic_files SET is_new = 0 WHERE id = ?1", params![file_id])?;
         Ok(())
+    }
+
+    pub fn toggle_comic_is_new(&self, file_id: i64) -> Result<bool> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE comic_files SET is_new = CASE WHEN is_new = 1 THEN 0 ELSE 1 END WHERE id = ?1",
+            params![file_id],
+        )?;
+        let is_new: bool = conn.query_row(
+            "SELECT is_new FROM comic_files WHERE id = ?1",
+            params![file_id],
+            |row| row.get(0),
+        )?;
+        Ok(is_new)
+    }
+
+    pub fn toggle_folder_is_new(&self, folder_id: i64) -> Result<bool> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE folders SET is_new = CASE WHEN is_new = 1 THEN 0 ELSE 1 END WHERE id = ?1",
+            params![folder_id],
+        )?;
+        let is_new: bool = conn.query_row(
+            "SELECT is_new FROM folders WHERE id = ?1",
+            params![folder_id],
+            |row| row.get(0),
+        )?;
+        let is_new_int = if is_new { 1 } else { 0 };
+        let _ = conn.execute(
+            "UPDATE comic_files SET is_new = ?1 WHERE folder_id = ?2",
+            params![is_new_int, folder_id],
+        );
+        Ok(is_new)
     }
 
     pub fn delete_cover_cache(&self, file_id: i64) -> Result<()> {
@@ -984,7 +1027,7 @@ impl Database {
 
         let sql = format!(
             r#"
-            SELECT f.id, f.library_id, f.relative_path, f.name, f.parent_id, f.rating
+            SELECT f.id, f.library_id, f.relative_path, f.name, f.parent_id, f.rating, f.is_new
             FROM folders f
             WHERE {}
             ORDER BY {} {}
@@ -1006,6 +1049,7 @@ impl Database {
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, i32>(5)?,
+                row.get::<_, bool>(6)?,
             ))
         })?;
 
@@ -1052,7 +1096,7 @@ impl Database {
         }
 
         let mut folders = Vec::with_capacity(raw_folders.len());
-        for (id, lib_id, rel_path, name, parent_id, rating) in raw_folders {
+        for (id, lib_id, rel_path, name, parent_id, rating, is_new) in raw_folders {
             let direct_tags = direct_tag_map.remove(&id).unwrap_or_default();
             folders.push(FolderItem {
                 id,
@@ -1061,6 +1105,7 @@ impl Database {
                 name,
                 parent_id,
                 rating,
+                is_new,
                 cover_data_url: None,
                 direct_tags,
             });
@@ -1121,7 +1166,7 @@ impl Database {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             r#"
-            SELECT f.id, f.library_id, f.relative_path, f.name, f.parent_id, f.rating,
+            SELECT f.id, f.library_id, f.relative_path, f.name, f.parent_id, f.rating, f.is_new,
                    (SELECT COUNT(*) FROM folders sub WHERE sub.parent_id = f.id) as subfolder_cnt,
                    (SELECT COUNT(*) FROM comic_files cf WHERE cf.folder_id = f.id AND cf.status = 'active') as file_cnt
             FROM folders f
@@ -1149,10 +1194,11 @@ impl Database {
                 name: row.get(3)?,
                 parent_id: row.get(4)?,
                 rating: row.get(5)?,
+                is_new: row.get(6)?,
                 cover_data_url: None,
                 direct_tags: tags,
-                subfolder_count: row.get::<_, i64>(6)? as usize,
-                file_count: row.get::<_, i64>(7)? as usize,
+                subfolder_count: row.get::<_, i64>(7)? as usize,
+                file_count: row.get::<_, i64>(8)? as usize,
             }))
         } else {
             Ok(None)
@@ -1430,5 +1476,53 @@ mod tests {
         db.rebuild_database().unwrap();
         let empty_lib = db.get_latest_library().unwrap();
         assert!(empty_lib.is_none(), "DB 재구축 후 라이브러리 목록이 비어있어야 함");
+    }
+
+    #[test]
+    fn test_legacy_db_migration_without_is_new() {
+        let temp_dir = std::env::temp_dir().join(format!("test_legacy_db_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("legacy.db");
+
+        // Manually create an old DB where folders table lacks is_new column
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE libraries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    root_path TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_scanned_at TEXT
+                );
+                CREATE TABLE folders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    library_id INTEGER NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    parent_id INTEGER,
+                    rating INTEGER NOT NULL DEFAULT 0,
+                    last_scanned_at TEXT,
+                    UNIQUE(library_id, relative_path)
+                );
+                INSERT INTO libraries (root_path, created_at, updated_at) VALUES ('D:/OldLib', 'now', 'now');
+                INSERT INTO folders (library_id, relative_path, name, parent_id, rating) VALUES (1, '', 'Root', NULL, 0);
+                INSERT INTO folders (library_id, relative_path, name, parent_id, rating) VALUES (1, 'sub', 'Sub', 1, 3);
+                "#
+            ).unwrap();
+        }
+
+        // Now initialize Database with this legacy db
+        let db = Database::new(db_path.clone());
+        assert!(db.is_ok(), "Database::new must successfully migrate legacy DB: {:?}", db.err());
+
+        let db = db.unwrap();
+        let folder = db.get_folder_by_id(2).unwrap().unwrap();
+        assert_eq!(folder.name, "Sub");
+        assert_eq!(folder.rating, 3);
+        assert!(folder.is_new, "Migrated folder must have is_new = true by default");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

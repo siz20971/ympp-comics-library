@@ -55,7 +55,7 @@ function formatSize(bytes: number): string {
   <div
     @click="handleClick"
     @dblclick="handleDblClick"
-    @contextmenu.prevent="emit('contextmenu', $event, comic)"
+    @contextmenu.prevent.stop="emit('contextmenu', $event, comic)"
     class="group relative flex flex-col rounded-xl overflow-hidden bg-neutral-900/60 border transition duration-200 cursor-pointer select-none shadow-md hover:shadow-xl hover:shadow-indigo-500/10"
     :class="isSelected ? 'border-indigo-500 ring-2 ring-indigo-500/40 bg-neutral-800/80' : 'border-neutral-800 hover:border-neutral-700'"
   >

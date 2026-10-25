@@ -18,6 +18,7 @@ pub struct FolderItem {
     pub name: String,
     pub parent_id: Option<i64>,
     pub rating: i32,
+    pub is_new: bool,
     pub cover_data_url: Option<String>,
     pub direct_tags: Vec<TagItem>,
 }
@@ -68,6 +69,7 @@ pub struct FolderDetail {
     pub name: String,
     pub parent_id: Option<i64>,
     pub rating: i32,
+    pub is_new: bool,
     pub cover_data_url: Option<String>,
     pub direct_tags: Vec<TagItem>,
     pub subfolder_count: usize,
@@ -147,6 +149,8 @@ pub struct AppSettings {
     pub card_size: String,
     #[serde(default = "default_include_folder_tags")]
     pub include_folder_tags_in_search: bool,
+    #[serde(default = "default_show_folder_new_badge")]
+    pub show_folder_new_badge: bool,
 }
 
 fn default_card_size() -> String {
@@ -154,5 +158,9 @@ fn default_card_size() -> String {
 }
 
 fn default_include_folder_tags() -> bool {
+    false
+}
+
+fn default_show_folder_new_badge() -> bool {
     false
 }

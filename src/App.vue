@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onMounted, onUnmounted, ref } from 'vue';
 import { useLibraryStore } from './stores/libraryStore';
 import TopNav from './components/TopNav.vue';
 import BreadcrumbNav from './components/BreadcrumbNav.vue';
@@ -18,8 +18,61 @@ const isSettingsOpen = ref(false);
 
 const contextMenuTarget = ref<ContextMenuTarget | null>(null);
 
+function handleMouseUp(e: MouseEvent) {
+  if (!store.library) return;
+  // Mouse 4: Back button
+  if (e.button === 3) {
+    e.preventDefault();
+    e.stopPropagation();
+    store.goBack();
+  }
+  // Mouse 5: Forward button
+  else if (e.button === 4) {
+    e.preventDefault();
+    e.stopPropagation();
+    store.goForward();
+  }
+}
+
+function handleMouseDown(e: MouseEvent) {
+  // Prevent default browser/webview history navigation on Mouse 4 & 5
+  if (e.button === 3 || e.button === 4) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}
+
+function handleKeyDown(e: KeyboardEvent) {
+  if (!store.library) return;
+  const target = e.target as HTMLElement | null;
+  const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+
+  if (e.altKey && e.key === 'ArrowLeft') {
+    e.preventDefault();
+    store.goBack();
+  } else if (e.altKey && e.key === 'ArrowRight') {
+    e.preventDefault();
+    store.goForward();
+  } else if (e.altKey && e.key === 'ArrowUp') {
+    e.preventDefault();
+    store.goToParent();
+  } else if (!isInput && e.key === 'Backspace') {
+    e.preventDefault();
+    store.goBack();
+  }
+}
+
 onMounted(() => {
   store.init();
+  window.addEventListener('mouseup', handleMouseUp, { capture: true });
+  window.addEventListener('mousedown', handleMouseDown, { capture: true });
+  window.addEventListener('keydown', handleKeyDown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('mouseup', handleMouseUp, { capture: true });
+  window.removeEventListener('mousedown', handleMouseDown, { capture: true });
+  window.removeEventListener('keydown', handleKeyDown);
 });
 
 async function handlePickLibrary() {
@@ -38,6 +91,8 @@ async function handlePickLibrary() {
 }
 
 function handleComicContextMenu(e: MouseEvent, comic: ComicFileItem) {
+  e.preventDefault();
+  e.stopPropagation();
   contextMenuTarget.value = {
     type: 'comic',
     comic,
@@ -47,6 +102,8 @@ function handleComicContextMenu(e: MouseEvent, comic: ComicFileItem) {
 }
 
 function handleFolderContextMenu(e: MouseEvent, folder: FolderItem) {
+  e.preventDefault();
+  e.stopPropagation();
   contextMenuTarget.value = {
     type: 'folder',
     folder,
@@ -56,6 +113,9 @@ function handleFolderContextMenu(e: MouseEvent, folder: FolderItem) {
 }
 
 function handleBackgroundContextMenu(e: MouseEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+  if (!store.library) return;
   contextMenuTarget.value = {
     type: 'background',
     x: e.clientX,
@@ -67,7 +127,7 @@ function handleBackgroundContextMenu(e: MouseEvent) {
 <template>
   <div
     class="h-screen w-screen flex flex-col bg-neutral-950 text-neutral-100 overflow-hidden font-sans"
-    @contextmenu.prevent
+    @contextmenu.prevent.stop="handleBackgroundContextMenu"
   >
     <!-- Top Navigation -->
     <TopNav @open-settings="isSettingsOpen = true" />
@@ -106,7 +166,7 @@ function handleBackgroundContextMenu(e: MouseEvent) {
         <!-- Scrollable Grid Content -->
         <div
           class="flex-1 overflow-y-auto p-6 scroll-smooth"
-          @contextmenu.prevent="handleBackgroundContextMenu"
+          @contextmenu.prevent.stop="handleBackgroundContextMenu"
         >
           <!-- 1. No Library Selected View -->
           <div

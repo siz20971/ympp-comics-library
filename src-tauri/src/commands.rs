@@ -90,6 +90,7 @@ impl AppState {
             thumbnail_size: 480,
             card_size: "md".to_string(),
             include_folder_tags_in_search: false,
+            show_folder_new_badge: false,
         }
     }
 
@@ -432,6 +433,24 @@ pub async fn update_folder_rating(
 ) -> Result<(), String> {
     let ctx = state.get_context().await?;
     ctx.db.update_folder_rating(folder_id, rating).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn toggle_comic_is_new(
+    file_id: i64,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let ctx = state.get_context().await?;
+    ctx.db.toggle_comic_is_new(file_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn toggle_folder_is_new(
+    folder_id: i64,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let ctx = state.get_context().await?;
+    ctx.db.toggle_folder_is_new(folder_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

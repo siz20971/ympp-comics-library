@@ -141,7 +141,15 @@ function formatDate(dateStr: string): string {
             class="w-full h-full object-contain"
           />
           <div
-            class="absolute top-2 left-2 flex items-center gap-1 px-2 py-0.5 rounded-md bg-neutral-950/80 border border-neutral-700/60 text-indigo-300 text-[10px] font-semibold backdrop-blur"
+            v-if="store.settings.show_folder_new_badge && store.selectedFolderDetail.is_new"
+            class="absolute top-2 left-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold shadow z-10"
+          >
+            <Sparkles class="w-3 h-3" />
+            신규 (NEW)
+          </div>
+          <div
+            class="absolute left-2 flex items-center gap-1 px-2 py-0.5 rounded-md bg-neutral-950/80 border border-neutral-700/60 text-indigo-300 text-[10px] font-semibold backdrop-blur"
+            :class="(store.settings.show_folder_new_badge && store.selectedFolderDetail.is_new) ? 'top-8' : 'top-2'"
           >
             <Folder class="w-3 h-3 text-indigo-400" />
             폴더
@@ -159,6 +167,13 @@ function formatDate(dateStr: string): string {
           v-else
           class="w-full aspect-[4/3] bg-neutral-950 rounded-xl flex flex-col items-center justify-center border border-neutral-800 shadow-inner p-4 text-center relative"
         >
+          <div
+            v-if="store.settings.show_folder_new_badge && store.selectedFolderDetail.is_new"
+            class="absolute top-2 left-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold shadow z-10"
+          >
+            <Sparkles class="w-3 h-3" />
+            신규 (NEW)
+          </div>
           <button
             @click="store.refreshItem('folder', store.selectedFolderDetail.id)"
             class="absolute top-2 right-2 p-1.5 rounded-lg bg-neutral-900/80 hover:bg-neutral-800 border border-neutral-800 text-neutral-400 hover:text-white transition cursor-pointer"

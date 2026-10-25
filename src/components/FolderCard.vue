@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { onUnmounted } from 'vue';
+import { computed, onUnmounted } from 'vue';
+import { useLibraryStore } from '../stores/libraryStore';
 import type { FolderItem } from '../types';
-import { Folder, Star } from 'lucide-vue-next';
+import { Folder, Star, Sparkles } from 'lucide-vue-next';
 
 const props = defineProps<{
   folder: FolderItem;
   isSelected?: boolean;
 }>();
+
+const store = useLibraryStore();
+const showNew = computed(() => !!store.settings.show_folder_new_badge && props.folder.is_new);
 
 const emit = defineEmits<{
   (e: 'select-folder', folderId: number): void;
@@ -48,7 +52,7 @@ onUnmounted(() => {
   <div
     @click="handleClick"
     @dblclick="handleDblClick"
-    @contextmenu.prevent="emit('contextmenu', $event, folder)"
+    @contextmenu.prevent.stop="emit('contextmenu', $event, folder)"
     class="group relative flex flex-col rounded-xl overflow-hidden bg-neutral-900/60 border transition duration-200 cursor-pointer select-none shadow-md hover:shadow-xl hover:shadow-indigo-500/10"
     :class="isSelected ? 'border-indigo-500 ring-2 ring-indigo-500/40 bg-neutral-800/80' : 'border-neutral-800 hover:border-neutral-700'"
   >
@@ -69,9 +73,19 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- New Badge -->
+      <div
+        v-if="showNew"
+        class="absolute top-2 left-2 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/90 text-white text-[9px] font-bold shadow-lg uppercase tracking-wider backdrop-blur z-10"
+      >
+        <Sparkles class="w-2.5 h-2.5" />
+        NEW
+      </div>
+
       <!-- Folder Pill Badge (Top Left) -->
       <div
-        class="absolute top-2 left-2 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-neutral-950/80 border border-neutral-800 text-indigo-300 text-[10px] font-semibold backdrop-blur"
+        class="absolute left-2 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-neutral-950/80 border border-neutral-800 text-indigo-300 text-[10px] font-semibold backdrop-blur"
+        :class="showNew ? 'top-8' : 'top-2'"
       >
         <Folder class="w-3 h-3 text-indigo-400 fill-indigo-400/40" />
         폴더

@@ -40,6 +40,8 @@ pub fn run() {
             commands::get_folder_detail,
             commands::update_comic_rating,
             commands::update_folder_rating,
+            commands::toggle_comic_is_new,
+            commands::toggle_folder_is_new,
             commands::update_comic_comment,
             commands::add_tag_to_comic,
             commands::remove_tag_from_comic,

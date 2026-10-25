@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useLibraryStore } from '../stores/libraryStore';
-import { ChevronRight, ArrowLeft, Folder, Star, Tag, Plus, X } from 'lucide-vue-next';
+import { ChevronRight, ArrowLeft, ArrowRight, ArrowUp, Folder, Star, Tag, Plus, X } from 'lucide-vue-next';
 
 const store = useLibraryStore();
 const newFolderTag = ref('');
@@ -18,16 +18,39 @@ function handleAddFolderTag() {
 
 <template>
   <div class="h-12 border-b border-neutral-800/80 bg-neutral-900/40 px-4 flex items-center justify-between gap-4 text-xs">
-    <!-- Breadcrumb items -->
-    <div class="flex items-center gap-1.5 overflow-x-auto py-1 scrollbar-none">
+    <!-- Breadcrumb items & Nav Buttons -->
+    <div class="flex items-center gap-1 overflow-x-auto py-1 scrollbar-none">
+      <!-- 뒤로 가기 (마우스 4번 / Alt+←) -->
       <button
-        v-if="store.folderContent.parent_folder !== null"
-        @click="store.loadFolder(store.folderContent.parent_folder.id)"
-        class="flex items-center gap-1 p-1 rounded hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200 transition cursor-pointer mr-1"
-        title="상위 폴더로 이동"
+        @click="store.goBack"
+        :disabled="!store.canGoBack"
+        class="flex items-center justify-center p-1 rounded hover:bg-neutral-800 disabled:opacity-30 disabled:pointer-events-none text-neutral-400 hover:text-neutral-100 transition cursor-pointer"
+        title="뒤로 가기 (마우스 4번 / Alt+←)"
       >
         <ArrowLeft class="w-3.5 h-3.5" />
       </button>
+
+      <!-- 앞으로 가기 (마우스 5번 / Alt+→) -->
+      <button
+        @click="store.goForward"
+        :disabled="!store.canGoForward"
+        class="flex items-center justify-center p-1 rounded hover:bg-neutral-800 disabled:opacity-30 disabled:pointer-events-none text-neutral-400 hover:text-neutral-100 transition cursor-pointer"
+        title="앞으로 가기 (마우스 5번 / Alt+→)"
+      >
+        <ArrowRight class="w-3.5 h-3.5" />
+      </button>
+
+      <!-- 상위 폴더로 이동 (Alt+↑) -->
+      <button
+        @click="store.goToParent"
+        :disabled="store.folderContent.parent_folder === null"
+        class="flex items-center justify-center p-1 rounded hover:bg-neutral-800 disabled:opacity-30 disabled:pointer-events-none text-neutral-400 hover:text-neutral-100 transition cursor-pointer mr-1.5"
+        title="상위 폴더로 이동 (Alt+↑)"
+      >
+        <ArrowUp class="w-3.5 h-3.5" />
+      </button>
+
+      <div class="h-3.5 w-[1px] bg-neutral-800 mr-1 shrink-0" />
 
       <template v-for="(item, index) in store.folderContent.breadcrumbs" :key="index">
         <ChevronRight v-if="index > 0" class="w-3.5 h-3.5 text-neutral-600 shrink-0" />

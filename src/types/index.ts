@@ -30,6 +30,7 @@ export interface FolderItem {
   name: string;
   parent_id: number | null;
   rating: number;
+  is_new: boolean;
   cover_data_url: string | null;
   direct_tags: TagItem[];
 }
@@ -42,6 +43,7 @@ export interface FolderDetail {
   name: string;
   parent_id: number | null;
   rating: number;
+  is_new: boolean;
   cover_data_url: string | null;
   direct_tags: TagItem[];
   subfolder_count: number;
@@ -133,4 +135,5 @@ export interface AppSettings {
   thumbnail_size: number;
   card_size: CardSizeMode;
   include_folder_tags_in_search: boolean;
+  show_folder_new_badge: boolean;
 }

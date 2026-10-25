@@ -25,6 +25,7 @@ export const useLibraryStore = defineStore('library', () => {
     thumbnail_size: 480,
     card_size: 'md',
     include_folder_tags_in_search: false,
+    show_folder_new_badge: false,
   });
 
   const cardMinWidth = computed(() => {
@@ -52,6 +53,18 @@ export const useLibraryStore = defineStore('library', () => {
     subfolders: [],
     files: [],
     breadcrumbs: [],
+  });
+
+  // Navigation History Stacks
+  const historyBackStack = ref<(number | null)[]>([]);
+  const historyForwardStack = ref<(number | null)[]>([]);
+
+  const canGoBack = computed(() => {
+    return historyBackStack.value.length > 0 || (folderContent.value.parent_folder !== null && mode.value === 'browse');
+  });
+
+  const canGoForward = computed(() => {
+    return historyForwardStack.value.length > 0;
   });
 
   const searchResults = ref<ComicFileItem[]>([]);
@@ -136,6 +149,8 @@ export const useLibraryStore = defineStore('library', () => {
       library.value = lib;
       settings.value.library_path = lib.root_path;
       clearSelection();
+      historyBackStack.value = [];
+      historyForwardStack.value = [];
       await startScan();
       await loadFolder(null);
     } catch (err) {
@@ -144,7 +159,30 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
-  async function loadFolder(folderId: number | null, preserveSelection: boolean = false) {
+  async function loadFolder(
+    folderId: number | null,
+    preserveSelection: boolean = false,
+    isHistoryNav: boolean = false
+  ) {
+    // 이미 해당 폴더가 로드되어 화면에 표시 중인지 판별 (초기 로드 상태가 아닐 때만 유효)
+    const isAlreadyLoaded = mode.value === 'browse' && (
+      (folderId === null && folderContent.value.current_folder === null && folderContent.value.breadcrumbs.length > 0) ||
+      (folderId !== null && folderContent.value.current_folder?.id === folderId)
+    );
+
+    // 동일 폴더 재진입 방지 (새로고침이거나 히스토리 이동인 경우는 통과)
+    if (!isHistoryNav && !preserveSelection && isAlreadyLoaded) {
+      return;
+    }
+
+    // 일반 이동 시 히스토리 스택에 이전 위치 기록 (최초 로드가 아닌 이미 브라우징 중일 때만)
+    if (!isHistoryNav && library.value && folderContent.value.breadcrumbs.length > 0) {
+      if (currentFolderId.value !== folderId || mode.value === 'search') {
+        historyBackStack.value.push(currentFolderId.value);
+        historyForwardStack.value = [];
+      }
+    }
+
     const navId = ++currentNavId;
     try {
       currentFolderId.value = folderId;
@@ -198,6 +236,37 @@ export const useLibraryStore = defineStore('library', () => {
       } catch (err) {
         console.error('Failed to resolve folder covers:', err);
       }
+    }
+  }
+
+  async function goBack() {
+    if (historyBackStack.value.length > 0) {
+      const prevFolderId = historyBackStack.value.pop()!;
+      historyForwardStack.value.push(currentFolderId.value);
+      await loadFolder(prevFolderId, false, true);
+      return true;
+    }
+    // 히스토리 스택이 비어 있어도 상위 폴더가 있으면 상위 폴더로 이동
+    if (folderContent.value.parent_folder !== null && mode.value === 'browse') {
+      await loadFolder(folderContent.value.parent_folder.id);
+      return true;
+    }
+    return false;
+  }
+
+  async function goForward() {
+    if (historyForwardStack.value.length > 0) {
+      const nextFolderId = historyForwardStack.value.pop()!;
+      historyBackStack.value.push(currentFolderId.value);
+      await loadFolder(nextFolderId, false, true);
+      return true;
+    }
+    return false;
+  }
+
+  async function goToParent() {
+    if (folderContent.value.parent_folder !== null) {
+      await loadFolder(folderContent.value.parent_folder.id);
     }
   }
 
@@ -482,6 +551,40 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
+  async function toggleComicIsNew(comicId: number) {
+    try {
+      const updatedIsNew = await invoke<boolean>('toggle_comic_is_new', { fileId: comicId });
+      const fileInFolder = folderContent.value.files.find((f) => f.id === comicId);
+      if (fileInFolder) fileInFolder.is_new = updatedIsNew;
+      const fileInSearch = searchResults.value.find((f) => f.id === comicId);
+      if (fileInSearch) fileInSearch.is_new = updatedIsNew;
+      if (selectedComicDetail.value && selectedComicDetail.value.id === comicId) {
+        selectedComicDetail.value.is_new = updatedIsNew;
+      }
+      return updatedIsNew;
+    } catch (err) {
+      console.error('Failed to toggle comic is_new:', err);
+      throw err;
+    }
+  }
+
+  async function toggleFolderIsNew(folderId: number) {
+    try {
+      const updatedIsNew = await invoke<boolean>('toggle_folder_is_new', { folderId });
+      const folderInSub = folderContent.value.subfolders.find((f) => f.id === folderId);
+      if (folderInSub) folderInSub.is_new = updatedIsNew;
+      const folderInSearch = searchFolderResults.value.find((f) => f.id === folderId);
+      if (folderInSearch) folderInSearch.is_new = updatedIsNew;
+      if (selectedFolderDetail.value && selectedFolderDetail.value.id === folderId) {
+        selectedFolderDetail.value.is_new = updatedIsNew;
+      }
+      return updatedIsNew;
+    } catch (err) {
+      console.error('Failed to toggle folder is_new:', err);
+      throw err;
+    }
+  }
+
   async function updateComicComment(fileId: number, comment: string) {
     try {
       await invoke('update_comic_comment', { fileId, comment });
@@ -652,6 +755,10 @@ export const useLibraryStore = defineStore('library', () => {
     mode,
     currentFolderId,
     folderContent,
+    historyBackStack,
+    historyForwardStack,
+    canGoBack,
+    canGoForward,
     searchResults,
     searchFolderResults,
     selectedComicId,
@@ -670,6 +777,9 @@ export const useLibraryStore = defineStore('library', () => {
     init,
     setLibraryPath,
     loadFolder,
+    goBack,
+    goForward,
+    goToParent,
     clearSelection,
     startScan,
     cancelScan,
@@ -683,6 +793,8 @@ export const useLibraryStore = defineStore('library', () => {
     showInFileManager,
     updateComicRating,
     updateFolderRating,
+    toggleComicIsNew,
+    toggleFolderIsNew,
     updateComicComment,
     addTagToComic,
     removeTagFromComic,
