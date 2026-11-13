@@ -5,6 +5,7 @@ pub mod launcher;
 pub mod models;
 pub mod path_utils;
 pub mod scanner;
+pub mod updater;
 
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -16,6 +17,11 @@ use tokio::sync::RwLock;
 pub fn run() {
     let app_dir = path_utils::get_app_dir();
     let settings_path = app_dir.join("settings.json");
+
+    let app_dir_for_cleanup = app_dir.clone();
+    std::thread::spawn(move || {
+        updater::cleanup_stale_update_files(&app_dir_for_cleanup);
+    });
 
     let app_state = AppState {
         app_dir,
@@ -100,6 +106,11 @@ pub fn run() {
             commands::update_tag,
             commands::delete_tag,
             commands::rebuild_library_cache,
+            commands::check_for_updates,
+            commands::download_and_apply_update,
+            commands::snooze_update_week,
+            commands::ignore_update_forever,
+            commands::clear_update_suppression,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

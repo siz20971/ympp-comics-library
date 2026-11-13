@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   Library,
   FolderContent,
@@ -15,6 +16,8 @@ import type {
   TagDetailItem,
   SelectableTagOption,
   TagPickerContext,
+  UpdateCheckResult,
+  UpdateDownloadProgress,
 } from '../types';
 
 export function cleanTagDisplay(raw: string): string {
@@ -36,6 +39,8 @@ export const useLibraryStore = defineStore('library', () => {
     card_size: 'md',
     include_folder_tags_in_search: false,
     show_folder_new_badge: false,
+    update_snooze_until: null,
+    ignore_updates_permanently: false,
   });
 
   const cardMinWidth = computed(() => {
@@ -97,6 +102,27 @@ export const useLibraryStore = defineStore('library', () => {
   const settingsInitialTab = ref<'general' | 'tags'>('general');
   const tagPickerContext = ref<TagPickerContext | null>(null);
 
+  // Auto-update states
+  const updateResult = ref<UpdateCheckResult | null>(null);
+  const isUpdateModalOpen = ref(false);
+  const isCheckingUpdate = ref(false);
+  const updateCheckError = ref<string | null>(null);
+  const isDownloadingUpdate = ref(false);
+  const updateProgress = ref<UpdateDownloadProgress | null>(null);
+  const updateError = ref<string | null>(null);
+  let updateUnlisten: UnlistenFn | null = null;
+
+  const isAutoUpdateSuppressed = computed(() => {
+    if (settings.value.ignore_updates_permanently) return true;
+    if (settings.value.update_snooze_until) {
+      const snoozeTime = Date.parse(settings.value.update_snooze_until);
+      if (!Number.isNaN(snoozeTime) && snoozeTime > Date.now()) {
+        return true;
+      }
+    }
+    return false;
+  });
+
   const availableTags = computed<SelectableTagOption[]>(() => {
     const map = new Map<string, SelectableTagOption>();
 
@@ -149,8 +175,16 @@ export const useLibraryStore = defineStore('library', () => {
     try {
       const state = await invoke<{ settings: AppSettings; library: Library | null }>('get_initial_state');
       if (state.settings) {
-        settings.value = state.settings;
+        settings.value = {
+          ...settings.value,
+          ...state.settings,
+          update_snooze_until: state.settings.update_snooze_until ?? null,
+          ignore_updates_permanently: state.settings.ignore_updates_permanently ?? false,
+        };
       }
+      // Run mandatory startup update check asynchronously (does not block initial library rendering)
+      void checkForUpdates(true);
+
       if (state.library) {
         library.value = state.library;
         await Promise.all([loadFolder(null), loadTags()]);
@@ -982,6 +1016,113 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
+  async function checkForUpdates(isStartup: boolean = false): Promise<UpdateCheckResult | null> {
+    if (isCheckingUpdate.value) return updateResult.value;
+    isCheckingUpdate.value = true;
+    updateCheckError.value = null;
+
+    try {
+      const res = await invoke<UpdateCheckResult>('check_for_updates');
+      updateResult.value = res;
+
+      if (res.has_update) {
+        if (!isStartup || !isAutoUpdateSuppressed.value) {
+          isUpdateModalOpen.value = true;
+        }
+      }
+      return res;
+    } catch (err) {
+      const msg = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err);
+      updateCheckError.value = msg;
+      if (isStartup) {
+        console.warn('Startup update check skipped/failed:', msg);
+      } else {
+        console.error('Manual update check failed:', msg);
+      }
+      return null;
+    } finally {
+      isCheckingUpdate.value = false;
+    }
+  }
+
+  function openUpdateModal() {
+    if (updateResult.value?.has_update) {
+      updateError.value = null;
+      isUpdateModalOpen.value = true;
+    }
+  }
+
+  function closeUpdateModal() {
+    if (isDownloadingUpdate.value) return;
+    isUpdateModalOpen.value = false;
+  }
+
+  async function snoozeUpdateWeek() {
+    try {
+      const updated = await invoke<AppSettings>('snooze_update_week');
+      settings.value = updated;
+      isUpdateModalOpen.value = false;
+    } catch (err) {
+      console.error('Failed to snooze update:', err);
+    }
+  }
+
+  async function ignoreUpdateForever() {
+    try {
+      const updated = await invoke<AppSettings>('ignore_update_forever');
+      settings.value = updated;
+      isUpdateModalOpen.value = false;
+    } catch (err) {
+      console.error('Failed to ignore updates forever:', err);
+    }
+  }
+
+  async function clearUpdateSuppression() {
+    try {
+      const updated = await invoke<AppSettings>('clear_update_suppression');
+      settings.value = updated;
+    } catch (err) {
+      console.error('Failed to reset update suppression:', err);
+    }
+  }
+
+  async function downloadAndApplyUpdate() {
+    if (!updateResult.value?.download_url || isDownloadingUpdate.value) return;
+
+    isDownloadingUpdate.value = true;
+    updateError.value = null;
+    updateProgress.value = {
+      downloaded: 0,
+      total: updateResult.value.asset_size ?? null,
+      percent: 0,
+      stage: 'downloading',
+    };
+
+    try {
+      if (updateUnlisten) {
+        updateUnlisten();
+        updateUnlisten = null;
+      }
+      updateUnlisten = await listen<UpdateDownloadProgress>('update://progress', (event) => {
+        updateProgress.value = event.payload;
+      });
+
+      await invoke('download_and_apply_update', {
+        downloadUrl: updateResult.value.download_url,
+        expectedSize: updateResult.value.asset_size ?? null,
+      });
+    } catch (err) {
+      const msg = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err);
+      updateError.value = msg;
+      isDownloadingUpdate.value = false;
+    } finally {
+      if (updateUnlisten) {
+        updateUnlisten();
+        updateUnlisten = null;
+      }
+    }
+  }
+
   const isScanning = computed(() => scanProgress.value.is_scanning);
 
   return {
@@ -1015,6 +1156,14 @@ export const useLibraryStore = defineStore('library', () => {
     isSettingsOpen,
     settingsInitialTab,
     tagPickerContext,
+    updateResult,
+    isUpdateModalOpen,
+    isCheckingUpdate,
+    updateCheckError,
+    isDownloadingUpdate,
+    updateProgress,
+    updateError,
+    isAutoUpdateSuppressed,
     init,
     setLibraryPath,
     loadFolder,
@@ -1060,5 +1209,12 @@ export const useLibraryStore = defineStore('library', () => {
     applyTagPickerSelection,
     rebuildDatabase,
     saveSettings,
+    checkForUpdates,
+    openUpdateModal,
+    closeUpdateModal,
+    snoozeUpdateWeek,
+    ignoreUpdateForever,
+    clearUpdateSuppression,
+    downloadAndApplyUpdate,
   };
 });

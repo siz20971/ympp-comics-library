@@ -9,6 +9,7 @@ import ComicCard from './components/ComicCard.vue';
 import DetailPanel from './components/DetailPanel.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import TagPickerModal from './components/TagPickerModal.vue';
+import UpdateModal from './components/UpdateModal.vue';
 import StatusBar from './components/StatusBar.vue';
 import ContextMenu, { type ContextMenuTarget } from './components/ContextMenu.vue';
 import { FolderOpen, SearchX, BookOpen, Layers, Play, FolderSearch } from 'lucide-vue-next';
@@ -449,6 +450,9 @@ function handleBackgroundContextMenu(e: MouseEvent) {
 
     <!-- Dedicated Tag Picker Popup -->
     <TagPickerModal />
+
+    <!-- Auto-Update Modal -->
+    <UpdateModal />
 
     <!-- Custom Right Click Context Menu -->
     <ContextMenu

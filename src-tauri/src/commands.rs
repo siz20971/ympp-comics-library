@@ -1,7 +1,8 @@
+use chrono::{Duration, Utc};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, State};
 use tokio::sync::RwLock;
 
 use crate::cover::CoverExtractor;
@@ -9,10 +10,11 @@ use crate::db::Database;
 use crate::launcher::Launcher;
 use crate::models::{
     AppSettings, ComicDetail, ComicFileItem, FolderContent, FolderDetail, FolderItem, Library,
-    ScanProgress, SearchQuery, TagDetailItem, TagItem,
+    ScanProgress, SearchQuery, TagDetailItem, TagItem, UpdateCheckResult,
 };
 use crate::path_utils;
 use crate::scanner::Scanner;
+use crate::updater;
 
 #[derive(Clone)]
 pub struct LibraryContext {
@@ -107,6 +109,8 @@ impl AppState {
             card_size: "md".to_string(),
             include_folder_tags_in_search: false,
             show_folder_new_badge: false,
+            update_snooze_until: None,
+            ignore_updates_permanently: false,
         }
     }
 
@@ -691,4 +695,45 @@ pub async fn rebuild_library_cache(state: State<'_, AppState>) -> Result<(), Str
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// --- Auto-Update Commands ---
+#[tauri::command]
+pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
+    updater::check_for_updates().await
+}
+
+#[tauri::command]
+pub async fn download_and_apply_update(
+    app: AppHandle,
+    download_url: String,
+    expected_size: Option<u64>,
+) -> Result<(), String> {
+    updater::download_and_apply_update(app, download_url, expected_size).await
+}
+
+#[tauri::command]
+pub async fn snooze_update_week(state: State<'_, AppState>) -> Result<AppSettings, String> {
+    let mut settings = state.load_settings();
+    let until = Utc::now() + Duration::days(7);
+    settings.update_snooze_until = Some(until.to_rfc3339());
+    state.save_settings(&settings)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub async fn ignore_update_forever(state: State<'_, AppState>) -> Result<AppSettings, String> {
+    let mut settings = state.load_settings();
+    settings.ignore_updates_permanently = true;
+    state.save_settings(&settings)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub async fn clear_update_suppression(state: State<'_, AppState>) -> Result<AppSettings, String> {
+    let mut settings = state.load_settings();
+    settings.update_snooze_until = None;
+    settings.ignore_updates_permanently = false;
+    state.save_settings(&settings)?;
+    Ok(settings)
 }

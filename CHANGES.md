@@ -5,6 +5,21 @@
 
 ---
 
+## [0.3.0] - 2026-11-14
+
+### Added
+- **GitHub Releases 기반 자동 업데이트 기능 구현**
+  - **Backend (`src-tauri/src/updater.rs`, `models.rs`, `commands.rs`, `lib.rs`)**:
+    - GitHub Releases API(`siz20971/ympp-comics-library`) 조회 및 SemVer 비교를 통한 신규 릴리즈 전체 목록·릴리즈 노트 집계 (`check_for_updates`, `YMPP_UPDATE_FEED_URL` 환경변수 오버라이드 및 로컬 목 HTTP 테스트 지원)
+    - `YMPPComicsLibrary.exe` 스트리밍 다운로드 + 진행률 이벤트(`update://progress`) 발행 + 파일 크기 및 PE `MZ` 헤더 무결성 검증
+    - Windows 실행 중 자기 자신 교체(`.old` 백업 -> `.new` 적용, 실패 시 자동 롤백) 및 앱 시작 시 잔여 `.old` / `.new` 파일 백그라운드 정리, 개발 바이너리(`/target/debug/`, `/target/release/`) 보호 가드
+    - 1주일 미표시(`snooze_update_week`), 계속 무시하기(`ignore_update_forever`, 옵션 B), 알림 재활성화(`clear_update_suppression`) IPC 커맨드 및 `AppSettings` 필드 추가
+  - **Frontend (`UpdateModal.vue`, `libraryStore.ts`, `SettingsModal.vue`, `TopNav.vue`, `App.vue`, `types/index.ts`)**:
+    - 앱 최초 실행 시 비차단(non-blocking) 필수 백그라운드 업데이트 확인 로직 추가 (`init()`)
+    - 공통 `UpdateModal.vue` 구현: 현재 버전 vs 최신 버전, 중간 건너뛴 모든 릴리즈의 전체 변경 내역 표시, 실시간 다운로드 진행률 바, 3가지 사용자 액션(**계속 무시하기**, **일주일 업데이트 보지 않기**, **업데이트 하기**) 제공
+    - `SettingsModal.vue` 일반 탭에 수동 **업데이트 확인** 버튼, 현재 상태 메시지, 알림 무시/일시중지 해제(**알림 다시 켜기**) UI 추가 및 설정 저장 시 업데이트 억제 상태 보존
+    - `TopNav.vue` 우측 상단에 업데이트 가능 배지 표시(클릭 시 `UpdateModal` 오픈)
+
 ## [0.2.0] - 2026-11-14
 
 - **태그 관리 및 전용 태그 선택 팝업 개선**:

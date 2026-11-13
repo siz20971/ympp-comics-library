@@ -137,6 +137,35 @@ export interface AppSettings {
   card_size: CardSizeMode;
   include_folder_tags_in_search: boolean;
   show_folder_new_badge: boolean;
+  update_snooze_until?: string | null;
+  ignore_updates_permanently?: boolean;
+}
+
+export interface ReleaseNoteEntry {
+  version: string;
+  title: string;
+  published_at: string;
+  body: string;
+  html_url: string;
+}
+
+export interface UpdateCheckResult {
+  current_version: string;
+  latest_version: string;
+  has_update: boolean;
+  download_url: string | null;
+  asset_name: string | null;
+  asset_size: number | null;
+  html_url: string;
+  releases: ReleaseNoteEntry[];
+  is_dev_build: boolean;
+}
+
+export interface UpdateDownloadProgress {
+  downloaded: number;
+  total: number | null;
+  percent: number;
+  stage: string;
 }
 
 export interface SelectableTagOption {

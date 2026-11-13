@@ -11,6 +11,7 @@ import {
   X,
   Star,
   Tag,
+  Sparkles,
 } from 'lucide-vue-next';
 
 const emit = defineEmits<{
@@ -166,8 +167,18 @@ function handleSearchKeydown(e: KeyboardEvent) {
       </button>
     </div>
 
-    <!-- Right: Settings -->
+    <!-- Right: Update Badge & Settings -->
     <div class="flex items-center gap-2">
+      <button
+        v-if="store.updateResult?.has_update && !store.isAutoUpdateSuppressed"
+        @click="store.openUpdateModal()"
+        class="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 text-xs font-medium flex items-center gap-1.5 transition cursor-pointer"
+        :title="`새 버전 ${store.updateResult.latest_version} 업데이트 가능`"
+      >
+        <Sparkles class="w-3.5 h-3.5" />
+        <span>{{ store.updateResult.latest_version }}</span>
+      </button>
+
       <button
         @click="emit('open-settings')"
         class="p-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition cursor-pointer border border-neutral-700/60"

@@ -17,6 +17,10 @@ import {
   AlertTriangle,
   Sliders,
   Search,
+  RefreshCw,
+  CheckCircle2,
+  Bell,
+  Loader2,
 } from 'lucide-vue-next';
 
 import type { CardSizeMode } from '../types';
@@ -124,11 +128,51 @@ async function handleSaveGeneral() {
     card_size: cardSize.value,
     include_folder_tags_in_search: includeFolderTagsInSearch.value,
     show_folder_new_badge: showFolderNewBadge.value,
+    update_snooze_until: store.settings.update_snooze_until ?? null,
+    ignore_updates_permanently: store.settings.ignore_updates_permanently ?? false,
   });
   if (store.mode === 'search') {
     await store.executeSearch();
   }
   emit('close');
+}
+
+const manualUpdateMessage = ref<{ type: 'ok' | 'new' | 'error'; text: string } | null>(null);
+
+const suppressionStatusText = computed(() => {
+  if (store.settings.ignore_updates_permanently) {
+    return '자동 업데이트 알림: 계속 무시함';
+  }
+  if (store.settings.update_snooze_until) {
+    const dt = new Date(store.settings.update_snooze_until);
+    if (!Number.isNaN(dt.getTime()) && dt.getTime() > Date.now()) {
+      return `자동 업데이트 알림: ${dt.toLocaleDateString('ko-KR')}까지 일시 중지됨`;
+    }
+  }
+  return null;
+});
+
+async function handleManualUpdateCheck() {
+  manualUpdateMessage.value = null;
+  const res = await store.checkForUpdates(false);
+  if (!res) {
+    manualUpdateMessage.value = {
+      type: 'error',
+      text: store.updateCheckError || '업데이트 확인 중 오류가 발생했습니다.',
+    };
+    return;
+  }
+  if (res.has_update) {
+    manualUpdateMessage.value = {
+      type: 'new',
+      text: `새 버전 ${res.latest_version}이(가) 있습니다.`,
+    };
+  } else {
+    manualUpdateMessage.value = {
+      type: 'ok',
+      text: `현재 최신 버전(${res.current_version})을 사용 중입니다.`,
+    };
+  }
 }
 
 // Tag Management Functions
@@ -416,10 +460,70 @@ async function handleExecuteRebuild() {
           </div>
         </div>
 
+        <!-- Build Version & Update Check Section -->
+        <div class="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2.5">
+          <div class="flex items-center justify-between gap-3">
+            <div class="space-y-0.5">
+              <div class="flex items-center gap-2">
+                <span class="font-semibold text-neutral-200">프로그램 업데이트</span>
+                <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-800 text-neutral-300">
+                  v0.3.0
+                </span>
+              </div>
+              <p class="text-[11px] text-neutral-500">
+                GitHub Releases에서 새 버전과 전체 변경 내역을 확인합니다.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              @click="handleManualUpdateCheck"
+              :disabled="store.isCheckingUpdate"
+              class="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium text-xs flex items-center gap-1.5 transition cursor-pointer shrink-0"
+            >
+              <Loader2 v-if="store.isCheckingUpdate" class="w-3.5 h-3.5 animate-spin" />
+              <RefreshCw v-else class="w-3.5 h-3.5" />
+              업데이트 확인
+            </button>
+          </div>
+
+          <div
+            v-if="suppressionStatusText"
+            class="flex items-center justify-between gap-2 pt-2 border-t border-neutral-800/80 text-[11px]"
+          >
+            <span class="text-amber-300/90">{{ suppressionStatusText }}</span>
+            <button
+              type="button"
+              @click="store.clearUpdateSuppression()"
+              class="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 flex items-center gap-1 transition cursor-pointer shrink-0"
+            >
+              <Bell class="w-3 h-3" />
+              알림 다시 켜기
+            </button>
+          </div>
+
+          <p
+            v-if="manualUpdateMessage"
+            class="text-[11px] px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5"
+            :class="
+              manualUpdateMessage.type === 'ok'
+                ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300'
+                : manualUpdateMessage.type === 'new'
+                  ? 'bg-indigo-950/40 border-indigo-800/60 text-indigo-300'
+                  : 'bg-red-950/40 border-red-800/60 text-red-300'
+            "
+          >
+            <CheckCircle2 v-if="manualUpdateMessage.type === 'ok'" class="w-3.5 h-3.5 shrink-0" />
+            <Sparkles v-else-if="manualUpdateMessage.type === 'new'" class="w-3.5 h-3.5 shrink-0" />
+            <AlertTriangle v-else class="w-3.5 h-3.5 shrink-0" />
+            <span class="break-all">{{ manualUpdateMessage.text }}</span>
+          </p>
+        </div>
+
         <!-- Build Version Info -->
-        <div class="flex items-center justify-between text-[11px] text-neutral-500 pt-3 border-t border-neutral-800/80">
+        <div class="flex items-center justify-between text-[11px] text-neutral-500 pt-2 border-t border-neutral-800/80">
           <span>YMPP Comics Library</span>
-          <span class="font-mono text-neutral-400">빌드 버전: v0.2.0</span>
+          <span class="font-mono text-neutral-400">빌드 버전: v0.3.0</span>
         </div>
       </div>
 
@@ -577,12 +681,6 @@ async function handleExecuteRebuild() {
               </button>
             </div>
           </div>
-        </div>
-
-        <!-- Build Version Info -->
-        <div class="flex items-center justify-between text-[11px] text-neutral-500 pt-3 border-t border-neutral-800/80">
-          <span>YMPP Comics Library</span>
-          <span class="font-mono text-neutral-400">빌드 버전: v0.2.0</span>
         </div>
       </div>
 

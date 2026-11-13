@@ -157,6 +157,41 @@ pub struct AppSettings {
     pub include_folder_tags_in_search: bool,
     #[serde(default = "default_show_folder_new_badge")]
     pub show_folder_new_badge: bool,
+    #[serde(default)]
+    pub update_snooze_until: Option<String>,
+    #[serde(default)]
+    pub ignore_updates_permanently: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseNoteEntry {
+    pub version: String,
+    pub title: String,
+    pub published_at: String,
+    pub body: String,
+    pub html_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCheckResult {
+    pub current_version: String,
+    pub latest_version: String,
+    pub has_update: bool,
+    pub download_url: Option<String>,
+    pub asset_name: Option<String>,
+    pub asset_size: Option<u64>,
+    pub html_url: String,
+    pub releases: Vec<ReleaseNoteEntry>,
+    #[serde(default)]
+    pub is_dev_build: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateDownloadProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
+    pub percent: f64,
+    pub stage: String,
 }
 
 fn default_card_size() -> String {
