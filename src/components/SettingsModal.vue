@@ -467,7 +467,7 @@ async function handleExecuteRebuild() {
               <div class="flex items-center gap-2">
                 <span class="font-semibold text-neutral-200">프로그램 업데이트</span>
                 <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-800 text-neutral-300">
-                  v0.3.0
+                  v0.4.0
                 </span>
               </div>
               <p class="text-[11px] text-neutral-500">
@@ -523,7 +523,7 @@ async function handleExecuteRebuild() {
         <!-- Build Version Info -->
         <div class="flex items-center justify-between text-[11px] text-neutral-500 pt-2 border-t border-neutral-800/80">
           <span>YMPP Comics Library</span>
-          <span class="font-mono text-neutral-400">빌드 버전: v0.3.0</span>
+          <span class="font-mono text-neutral-400">빌드 버전: v0.4.0</span>
         </div>
       </div>
 
