@@ -5,6 +5,39 @@
 
 ---
 
+## [0.2.0] - 2026-11-14
+
+- **태그 관리 및 전용 태그 선택 팝업 개선**:
+  - **일괄 태그 등록·정규화 백엔드 지원**:
+    - `db.rs`, `commands.rs`, `lib.rs`: 빈 태그명 입력 방어(`normalize_tag_parts`), 단일 트랜잭션 기반 다중 태그 일괄 반영 커맨드 `set_comic_tags` / `set_folder_tags` 추가 및 단위 테스트 보완. 모든 태그는 별도 구분 없이 라이브러리 DB(`.ymppCache/comics_library.db`)의 `tags` 테이블에 단일 통합 저장.
+  - **설정 내 태그 관리 기능 개선 (`SettingsModal.vue`)**:
+    - 설정의 `저장된 태그 관리` 탭에서 등록된 전체 태그 목록 조회/검색 필터링, 새 태그 추가(중복 방지 및 안내), 이름 수정, 삭제가 가능하도록 개선.
+  - **태그 검색 및 작품·폴더 태그 등록 전용 팝업 (`TagPickerModal.vue`)**:
+    - `TopNav.vue`, `DetailPanel.vue`, `BreadcrumbNav.vue`, `ContextMenu.vue`에서 태그 검색 또는 작품/폴더 태그 등록·편집 시 전용 팝업을 열 수 있도록 연동.
+    - 팝업 내 텍스트 입력칸으로 새 태그 추가 지원(동일한 이름의 태그가 이미 있으면 중복 생성하지 않고 기존 태그 자동 선택 및 안내), 목록 내 검색 필터링 및 다중 선택/일괄 저장 지원.
+
+- **개발 지침(`GEMINI.md`) 보완**:
+  - 프로젝트 수정 시 항상 `cmd /c build_release.bat`를 실행하여 `release/YMPPComicsLibrary.exe`를 갱신하도록 필수 규칙 추가.
+
+- **라이브러리 초기 로딩 및 폴더 탐색 성능 대규모 개선**:
+  - **커스텀 URI 프로토콜(`ymppcover`) 도입 및 Base64 IPC 제거**:
+    - `lib.rs`: `register_asynchronous_uri_scheme_protocol("ymppcover", ...)` 등록 (`Cache-Control: public, max-age=86400` 기반 브라우저 캐싱 및 비동기 WebP 바이너리 스트리밍).
+    - `cover.rs`, `commands.rs`: 폴더 진입/검색/상세 조회 시 수십 MB의 `data:image/webp;base64,...` 직렬화 및 일괄 디스크 읽기를 제거하고 경량 `ymppcover://` URI만 전달하도록 전환 (`refresh_item` 시 `?v=<timestamp>` 캐시 버스팅 지원).
+    - `src/utils/coverUrl.ts`, `FolderCard.vue`, `ComicCard.vue`, `DetailPanel.vue`: `convertFileSrc` 기반 URL 변환 및 이미지 로드 실패(`@error`) 시 안전 폴백 플레이스홀더 처리.
+  - **초기 구동 비차단화 및 DB 스키마 최적화**:
+    - `cover.rs`, `commands.rs`: `CoverExtractor::new`의 동기식 `read_dir` 전체 스캔을 제거하고 `switch_library` 완료 후 백그라운드 워밍(`warm_existing_files`)으로 전환. `switch_library`, `get_folder_content`, `search_comics`, `search_folders`, `get_comic_detail`, `get_folder_detail` 전체를 `tokio::task::spawn_blocking`으로 비차단화.
+    - `db.rs`: `PRAGMA user_version` 기반 스키마 마이그레이션 단축 및 `idx_folders_lib_parent` 복합 인덱스 추가, `get_folder_content_bundle`로 단일 DB 락 내 일괄 조회 통합.
+  - **폴더 표지 영속 상태(`cover_status`) 및 지연 탐색 취소/쿼리 최적화**:
+    - `db.rs`, `models.rs`, `commands.rs`: `folders.cover_status` (`unknown` / `ready` / `empty`) 컬럼 및 자동 마이그레이션 추가로 빈 폴더의 반복 SMB 디렉터리 탐색 제거.
+    - `db.rs`: `get_folder_cover_candidates`의 비인덱스 `LIKE` + `OR` 쿼리를 직접 폴더 조회 + B-tree 이진 범위 프리픽스 조회(`>= .../` AND `< ...0`)로 교체.
+    - `commands.rs`: `resolve_single_folder_cover`의 중복 하위 디렉터리 탐색 제거 및 `AppState.nav_generation`을 통한 폴더 이동 시 이전 `resolve_folder_covers` 청크 즉시 취소.
+    - `scanner.rs`, `db.rs`: `batch_upsert_folders` / `batch_upsert_comic_files` 단일 트랜잭션 일괄 등록으로 스캔 성능 개선.
+  - **프론트엔드 가상 스크롤 및 병렬 초기화**:
+    - `App.vue`: `@tanstack/vue-virtual` 기반 반응형 다열 가상 그리드 적용 및 폴더 이동 시 스크롤 최상단 초기화.
+    - `libraryStore.ts`: `init()`에서 `loadFolder(null)`과 `loadTags()` 병렬 실행, 루트 폴더 재진입 중복 방지 보완, `cover_status === 'empty'` 폴더의 불필요한 지연 표지 요청 스킵.
+
+---
+
 ## [0.1.0] - 2026-10-25
 
 - **폴더 'NEW' 배지 표시 여부 설정 옵션 추가**:

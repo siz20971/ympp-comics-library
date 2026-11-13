@@ -138,3 +138,16 @@ export interface AppSettings {
   include_folder_tags_in_search: boolean;
   show_folder_new_badge: boolean;
 }
+
+export interface SelectableTagOption {
+  key: string;
+  display_name: string;
+  id: number;
+}
+
+export interface TagPickerContext {
+  mode: 'search' | 'comic' | 'folder';
+  targetId?: number;
+  targetTitle?: string;
+  initialTags: string[];
+}

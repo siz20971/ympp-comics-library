@@ -850,10 +850,19 @@ impl Database {
     }
 
     // --- Tags and Inheritance ---
-    pub fn get_or_create_tag(&self, name: &str) -> Result<TagItem> {
-        let conn = self.conn()?;
-        let normalized = name.trim().trim_start_matches('#').to_lowercase();
-        let display = name.trim().trim_start_matches('#').to_string();
+    fn normalize_tag_parts(name: &str) -> Result<(String, String)> {
+        let display = name.trim().trim_start_matches('#').trim().to_string();
+        let normalized = display.to_lowercase();
+        if normalized.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "Tag name cannot be empty".to_string(),
+            ));
+        }
+        Ok((normalized, display))
+    }
+
+    fn get_or_create_tag_with_conn(conn: &Connection, name: &str) -> Result<TagItem> {
+        let (normalized, display) = Self::normalize_tag_parts(name)?;
 
         let mut stmt = conn.prepare("SELECT id, name, display_name, is_system FROM tags WHERE name = ?1")?;
         let existing = stmt.query_row(params![normalized], |row| {
@@ -882,6 +891,51 @@ impl Database {
             }
             Err(e) => Err(e),
         }
+    }
+
+    pub fn get_or_create_tag(&self, name: &str) -> Result<TagItem> {
+        let conn = self.conn()?;
+        Self::get_or_create_tag_with_conn(&conn, name)
+    }
+
+    fn set_item_tags(&self, is_folder: bool, item_id: i64, tag_names: &[String]) -> Result<()> {
+        let conn = self.conn()?;
+        let tx = conn.unchecked_transaction()?;
+
+        let (delete_sql, insert_sql) = if is_folder {
+            (
+                "DELETE FROM folder_tags WHERE folder_id = ?1",
+                "INSERT OR IGNORE INTO folder_tags (folder_id, tag_id) VALUES (?1, ?2)",
+            )
+        } else {
+            (
+                "DELETE FROM comic_file_tags WHERE comic_file_id = ?1",
+                "INSERT OR IGNORE INTO comic_file_tags (comic_file_id, tag_id) VALUES (?1, ?2)",
+            )
+        };
+
+        tx.execute(delete_sql, params![item_id])?;
+
+        let mut seen = std::collections::HashSet::new();
+        for raw_name in tag_names {
+            if let Ok((norm, _)) = Self::normalize_tag_parts(raw_name) {
+                if seen.insert(norm) {
+                    let tag = Self::get_or_create_tag_with_conn(&tx, raw_name)?;
+                    tx.execute(insert_sql, params![item_id, tag.id])?;
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn set_comic_tags(&self, file_id: i64, tag_names: &[String]) -> Result<()> {
+        self.set_item_tags(false, file_id, tag_names)
+    }
+
+    pub fn set_folder_tags(&self, folder_id: i64, tag_names: &[String]) -> Result<()> {
+        self.set_item_tags(true, folder_id, tag_names)
     }
 
     pub fn add_tag_to_comic(&self, file_id: i64, tag_name: &str) -> Result<()> {
@@ -1377,9 +1431,8 @@ impl Database {
 
     // --- Tag Management ---
     pub fn update_tag(&self, id: i64, new_display_name: &str) -> Result<()> {
+        let (normalized, display) = Self::normalize_tag_parts(new_display_name)?;
         let conn = self.conn()?;
-        let normalized = new_display_name.trim().trim_start_matches('#').to_lowercase();
-        let display = new_display_name.trim().trim_start_matches('#').to_string();
         conn.execute(
             "UPDATE tags SET name = ?1, display_name = ?2 WHERE id = ?3",
             params![normalized, display, id],
@@ -1826,5 +1879,45 @@ mod tests {
         db.reset_empty_folder_cover_statuses(lib.id).unwrap();
         let reloaded_m2 = db.get_folder_by_id(manga2_id).unwrap().unwrap();
         assert_eq!(reloaded_m2.cover_status, "unknown");
+    }
+
+    #[test]
+    fn test_set_item_tags_dedup_and_replace() {
+        let db = setup_test_db();
+        let lib = db.get_or_create_library("D:/TestTagBatch").unwrap();
+        let root_id = db.upsert_folder(lib.id, "", "Root", None).unwrap();
+        let folder_id = db.upsert_folder(lib.id, "Series", "Series", Some(root_id)).unwrap();
+        let (file_id, _) = db.upsert_comic_file(folder_id, "Series/vol1.cbz", "vol1.cbz", "cbz", 100, "t1").unwrap();
+
+        // Duplicate / prefix / blank values should deduplicate safely
+        db.set_comic_tags(
+            file_id,
+            &[
+                "#Action".to_string(),
+                "action".to_string(),
+                "  ".to_string(),
+                "###".to_string(),
+                "명작".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let detail = db.get_comic_detail(file_id, "D:/TestTagBatch").unwrap().unwrap();
+        assert_eq!(detail.direct_tags.len(), 2);
+
+        // Replace with subset + new tag should remove omitted tag cleanly
+        db.set_comic_tags(file_id, &["명작".to_string(), "일상물".to_string()]).unwrap();
+        let detail2 = db.get_comic_detail(file_id, "D:/TestTagBatch").unwrap().unwrap();
+        let names: Vec<String> = detail2.direct_tags.into_iter().map(|t| t.name).collect();
+        assert_eq!(names, vec!["명작".to_string(), "일상물".to_string()]);
+
+        // Folder batch tags propagate to inherited tags
+        db.set_folder_tags(folder_id, &["판타지".to_string(), "#판타지".to_string()]).unwrap();
+        let detail3 = db.get_comic_detail(file_id, "D:/TestTagBatch").unwrap().unwrap();
+        assert_eq!(detail3.inherited_tags.len(), 1);
+        assert_eq!(detail3.inherited_tags[0].name, "판타지");
+
+        // Empty tag creation must fail
+        assert!(db.get_or_create_tag("  ###  ").is_err());
     }
 }

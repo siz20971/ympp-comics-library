@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
-import { useLibraryStore } from '../stores/libraryStore';
+import { computed, ref, onMounted, watch } from 'vue';
+import { cleanTagDisplay, normalizeTagKey, useLibraryStore } from '../stores/libraryStore';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
   X,
@@ -16,9 +16,19 @@ import {
   RotateCcw,
   AlertTriangle,
   Sliders,
+  Search,
 } from 'lucide-vue-next';
 
 import type { CardSizeMode } from '../types';
+
+const props = withDefaults(
+  defineProps<{
+    initialTab?: 'general' | 'tags';
+  }>(),
+  {
+    initialTab: 'general',
+  }
+);
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -26,7 +36,13 @@ const emit = defineEmits<{
 
 const store = useLibraryStore();
 
-const activeTab = ref<'general' | 'tags'>('general');
+const activeTab = ref<'general' | 'tags'>(props.initialTab);
+watch(
+  () => props.initialTab,
+  (tab) => {
+    activeTab.value = tab;
+  }
+);
 
 // General settings
 const customViewer = ref(store.settings.custom_viewer_path || '');
@@ -53,15 +69,29 @@ const cardSizeLabels: Record<CardSizeMode, string> = {
 
 // Tag management
 const newTagName = ref('');
+const tagSearchFilter = ref('');
+const tagFeedback = ref<{ type: 'success' | 'warn'; message: string } | null>(null);
 const editingTagId = ref<number | null>(null);
 const editingTagName = ref('');
+
+const filteredTags = computed(() => {
+  const q = normalizeTagKey(tagSearchFilter.value);
+  if (!q) return store.tagsWithCounts;
+  return store.tagsWithCounts.filter(
+    (t) =>
+      normalizeTagKey(t.display_name || t.name).includes(q) ||
+      t.display_name.toLowerCase().includes(q)
+  );
+});
 
 // Rebuild DB confirm
 const showRebuildConfirm = ref(false);
 const isRebuilding = ref(false);
 
 onMounted(() => {
-  store.loadTagsWithCounts();
+  if (store.library) {
+    store.loadTagsWithCounts();
+  }
 });
 
 async function selectCustomViewer() {
@@ -103,9 +133,28 @@ async function handleSaveGeneral() {
 
 // Tag Management Functions
 async function handleCreateTag() {
-  if (newTagName.value.trim()) {
-    await store.createTag(newTagName.value.trim());
-    newTagName.value = '';
+  const clean = cleanTagDisplay(newTagName.value);
+  if (!clean) return;
+  if (!store.library) {
+    tagFeedback.value = {
+      type: 'warn',
+      message: '라이브러리 폴더를 먼저 선택해주세요.',
+    };
+    return;
+  }
+
+  const res = await store.createTag(clean);
+  newTagName.value = '';
+  if (res.duplicate && res.tag) {
+    tagFeedback.value = {
+      type: 'warn',
+      message: `이미 등록된 태그 '#${res.tag.display_name}'입니다.`,
+    };
+  } else if (res.created && res.tag) {
+    tagFeedback.value = {
+      type: 'success',
+      message: `'#${res.tag.display_name}' 태그를 등록했습니다.`,
+    };
   }
 }
 
@@ -122,9 +171,17 @@ async function saveEditTag(tagId: number) {
   }
 }
 
-async function handleDeleteTag(tagId: number, tagName: string) {
-  if (confirm(`'#${tagName}' 태그를 정말 삭제하시겠습니까?\n이 태그가 지정된 모든 만화책과 폴더에서 제거됩니다.`)) {
+async function handleDeleteTag(tagId: number, tagName: string, fileCount: number, folderCount: number) {
+  const used = fileCount + folderCount > 0;
+  const msg = used
+    ? `'#${tagName}' 태그를 정말 삭제하시겠습니까?\n이 태그가 지정된 만화책 ${fileCount}권과 폴더 ${folderCount}개에서 모두 제거됩니다.`
+    : `'#${tagName}' 태그를 삭제하시겠습니까?`;
+  if (confirm(msg)) {
     await store.deleteTag(tagId);
+    tagFeedback.value = {
+      type: 'success',
+      message: `'#${tagName}' 태그를 삭제했습니다.`,
+    };
   }
 }
 
@@ -159,7 +216,7 @@ async function handleExecuteRebuild() {
             일반 설정
           </button>
           <button
-            @click="activeTab = 'tags'; store.loadTagsWithCounts()"
+            @click="activeTab = 'tags'; if (store.library) store.loadTagsWithCounts()"
             class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer"
             :class="activeTab === 'tags' ? 'bg-neutral-800 text-indigo-400 border border-neutral-700/80 shadow' : 'text-neutral-400 hover:text-white'"
           >
@@ -170,7 +227,7 @@ async function handleExecuteRebuild() {
 
         <div class="flex items-center gap-2">
           <span class="px-2 py-0.5 rounded-full bg-indigo-950/80 border border-indigo-800/60 text-indigo-300 text-[10px] font-mono font-semibold">
-            v0.1.0
+            v0.2.0
           </span>
           <button
             @click="emit('close')"
@@ -362,28 +419,77 @@ async function handleExecuteRebuild() {
         <!-- Build Version Info -->
         <div class="flex items-center justify-between text-[11px] text-neutral-500 pt-3 border-t border-neutral-800/80">
           <span>YMPP Comics Library</span>
-          <span class="font-mono text-neutral-400">빌드 버전: v0.1.0</span>
+          <span class="font-mono text-neutral-400">빌드 버전: v0.2.0</span>
         </div>
       </div>
 
       <!-- Tab 2: Tag Management -->
       <div v-else-if="activeTab === 'tags'" class="p-6 space-y-4 text-xs text-neutral-300 overflow-y-auto flex-1">
         <!-- New Tag Registration Form -->
-        <div class="flex items-center gap-2 p-3 bg-neutral-950 rounded-xl border border-neutral-800">
-          <input
-            v-model="newTagName"
-            @keydown.enter="handleCreateTag"
-            type="text"
-            placeholder="등록할 새 태그 이름 입력 (예: 일상물, 명작)..."
-            class="flex-1 bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-          />
-          <button
-            @click="handleCreateTag"
-            class="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs flex items-center gap-1.5 transition cursor-pointer"
+        <div class="space-y-2 p-3.5 bg-neutral-950 rounded-xl border border-neutral-800">
+          <div class="flex items-center justify-between">
+            <label class="text-[11px] font-semibold text-neutral-200 flex items-center gap-1.5">
+              <Tag class="w-3.5 h-3.5 text-indigo-400" />
+              새 태그 추가
+            </label>
+            <span class="text-[11px] text-neutral-500">
+              동일한 이름의 태그는 중복 추가되지 않습니다.
+            </span>
+          </div>
+          <div class="flex items-center gap-2">
+            <input
+              v-model="newTagName"
+              @keydown.enter="handleCreateTag"
+              :disabled="!store.library"
+              type="text"
+              placeholder="추가할 태그 이름 입력 (예: 일상물, 명작)... (Enter)"
+              class="flex-1 bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-40"
+            />
+            <button
+              @click="handleCreateTag"
+              :disabled="!store.library || !cleanTagDisplay(newTagName)"
+              class="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-medium text-xs flex items-center gap-1.5 transition cursor-pointer"
+            >
+              <Plus class="w-3.5 h-3.5" />
+              태그 추가
+            </button>
+          </div>
+          <p
+            v-if="tagFeedback"
+            class="text-[11px] px-2.5 py-1.5 rounded-lg border"
+            :class="
+              tagFeedback.type === 'success'
+                ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-300'
+                : 'bg-amber-950/40 border-amber-800/60 text-amber-300'
+            "
           >
-            <Plus class="w-3.5 h-3.5" />
-            태그 등록
-          </button>
+            {{ tagFeedback.message }}
+          </p>
+        </div>
+
+        <!-- Search / Lookup Control -->
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-[11px] font-semibold text-neutral-300">
+            등록된 태그 목록 ({{ filteredTags.length }} / {{ store.tagsWithCounts.length }})
+          </span>
+
+          <div class="relative w-64">
+            <Search class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-500" />
+            <input
+              v-model="tagSearchFilter"
+              type="text"
+              placeholder="태그 목록 조회/검색..."
+              class="w-full bg-neutral-950 border border-neutral-800 focus:border-indigo-500 rounded-lg pl-8 pr-7 py-1.5 text-xs text-neutral-100 placeholder-neutral-500 focus:outline-none"
+            />
+            <button
+              v-if="tagSearchFilter"
+              type="button"
+              @click="tagSearchFilter = ''"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-200 cursor-pointer"
+            >
+              <X class="w-3 h-3" />
+            </button>
+          </div>
         </div>
 
         <!-- Tags Table / List -->
@@ -395,23 +501,31 @@ async function handleExecuteRebuild() {
             <div class="col-span-3 text-right">관리</div>
           </div>
 
-          <div v-if="store.tagsWithCounts.length === 0" class="p-8 text-center text-neutral-500 text-xs">
-            등록된 태그가 없습니다.
+          <div v-if="!store.library" class="p-8 text-center text-neutral-500 text-xs">
+            라이브러리 폴더를 먼저 선택하면 저장된 태그 목록을 조회·관리할 수 있습니다.
+          </div>
+
+          <div v-else-if="filteredTags.length === 0" class="p-8 text-center text-neutral-500 text-xs">
+            {{
+              store.tagsWithCounts.length === 0
+                ? '등록된 태그가 없습니다. 위 입력칸에서 새 태그를 추가해 보세요.'
+                : '검색어와 일치하는 태그가 없습니다.'
+            }}
           </div>
 
           <div
-            v-for="tag in store.tagsWithCounts"
+            v-for="tag in filteredTags"
             :key="tag.id"
             class="grid grid-cols-12 items-center px-4 py-2.5 border-b border-neutral-900 hover:bg-neutral-900/40 transition text-xs"
           >
             <!-- Tag Name (or edit input) -->
-            <div class="col-span-5 flex items-center gap-2">
+            <div class="col-span-5 flex items-center gap-2 min-w-0">
               <template v-if="editingTagId === tag.id">
                 <input
                   v-model="editingTagName"
                   @keydown.enter="saveEditTag(tag.id)"
                   type="text"
-                  class="bg-neutral-900 border border-indigo-500 rounded px-2 py-1 text-xs text-white focus:outline-none"
+                  class="w-28 bg-neutral-900 border border-indigo-500 rounded px-2 py-1 text-xs text-white focus:outline-none"
                   autoFocus
                 />
                 <button
@@ -428,7 +542,7 @@ async function handleExecuteRebuild() {
                 </button>
               </template>
               <template v-else>
-                <span class="inline-flex items-center px-2 py-0.5 rounded bg-indigo-950 border border-indigo-800 text-indigo-300 font-medium text-xs">
+                <span class="inline-flex items-center px-2 py-0.5 rounded bg-indigo-950 border border-indigo-800 text-indigo-300 font-medium text-xs truncate max-w-full">
                   #{{ tag.display_name }}
                 </span>
               </template>
@@ -455,7 +569,7 @@ async function handleExecuteRebuild() {
                 <Edit2 class="w-3.5 h-3.5" />
               </button>
               <button
-                @click="handleDeleteTag(tag.id, tag.display_name)"
+                @click="handleDeleteTag(tag.id, tag.display_name, tag.file_count, tag.folder_count)"
                 class="p-1.5 rounded hover:bg-neutral-800 text-neutral-400 hover:text-red-400 transition cursor-pointer"
                 title="태그 삭제"
               >
@@ -468,7 +582,7 @@ async function handleExecuteRebuild() {
         <!-- Build Version Info -->
         <div class="flex items-center justify-between text-[11px] text-neutral-500 pt-3 border-t border-neutral-800/80">
           <span>YMPP Comics Library</span>
-          <span class="font-mono text-neutral-400">빌드 버전: v0.1.0</span>
+          <span class="font-mono text-neutral-400">빌드 버전: v0.2.0</span>
         </div>
       </div>
 

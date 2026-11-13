@@ -1,19 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue';
 import { useLibraryStore } from '../stores/libraryStore';
 import { ChevronRight, ArrowLeft, ArrowRight, ArrowUp, Folder, Star, Tag, Plus, X } from 'lucide-vue-next';
 
 const store = useLibraryStore();
-const newFolderTag = ref('');
-const showAddTag = ref(false);
-
-function handleAddFolderTag() {
-  if (newFolderTag.value.trim() && store.folderContent.current_folder) {
-    store.addTagToFolder(store.folderContent.current_folder.id, newFolderTag.value.trim());
-    newFolderTag.value = '';
-    showAddTag.value = false;
-  }
-}
 </script>
 
 <template>
@@ -104,31 +93,19 @@ function handleAddFolderTag() {
             </button>
           </span>
 
-          <div v-if="showAddTag" class="flex items-center gap-1">
-            <input
-              v-model="newFolderTag"
-              @keydown.enter="handleAddFolderTag"
-              @keydown.esc="showAddTag = false"
-              type="text"
-              placeholder="태그 입력..."
-              class="w-20 bg-neutral-950 border border-indigo-500 rounded px-1.5 py-0.5 text-[10px] text-white focus:outline-none"
-              autoFocus
-            />
-            <button @click="handleAddFolderTag" class="text-indigo-400 hover:text-white cursor-pointer">
-              <Plus class="w-3 h-3" />
-            </button>
-            <button @click="showAddTag = false" class="text-neutral-500 hover:text-neutral-300 cursor-pointer">
-              <X class="w-3 h-3" />
-            </button>
-          </div>
-
           <button
-            v-else
-            @click="showAddTag = true"
-            class="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-neutral-200 text-[10px] cursor-pointer"
-            title="폴더에 태그 추가 (하위 만화책에 자동 상속됨)"
+            @click="
+              store.openFolderTagPicker(
+                store.folderContent.current_folder!.id,
+                store.folderContent.current_folder!.name,
+                store.folderContent.current_folder!.direct_tags
+              )
+            "
+            class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-[10px] transition cursor-pointer"
+            title="폴더 태그 선택 / 추가 (하위 만화책에 자동 상속됨)"
           >
             <Plus class="w-3 h-3" />
+            <span>태그</span>
           </button>
         </div>
       </div>

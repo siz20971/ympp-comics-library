@@ -103,19 +103,38 @@ function handleSearchKeydown(e: KeyboardEvent) {
         </button>
       </div>
 
-      <div class="relative w-44 hidden md:block">
-        <Tag class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-        <input
-          v-model="store.rawTagInput"
-          @keydown="handleSearchKeydown"
-          type="text"
-          placeholder="#태그 검색..."
-          class="w-full bg-neutral-950 border border-neutral-800 focus:border-indigo-500 focus:outline-none rounded-lg pl-8 pr-7 py-1.5 text-xs text-neutral-100 placeholder-neutral-500 transition"
-        />
+      <div
+        class="relative flex items-center gap-1 min-w-[150px] max-w-[260px] bg-neutral-950 border rounded-lg pl-2.5 pr-7 py-1.5 text-xs transition cursor-pointer"
+        :class="store.selectedSearchTags.length > 0 ? 'border-indigo-500/80 text-indigo-200' : 'border-neutral-800 hover:border-neutral-700 text-neutral-400'"
+        @click="store.openSearchTagPicker()"
+        title="태그 목록에서 다중 선택 또는 새 태그 추가하여 검색"
+      >
+        <Tag class="w-3.5 h-3.5 shrink-0" :class="store.selectedSearchTags.length > 0 ? 'text-indigo-400' : 'text-neutral-400'" />
+        <div v-if="store.selectedSearchTags.length > 0" class="flex items-center gap-1 overflow-hidden">
+          <span
+            v-for="tag in store.selectedSearchTags.slice(0, 2)"
+            :key="tag"
+            class="px-1.5 py-0.2 rounded bg-indigo-950 border border-indigo-800/70 text-indigo-300 text-[10px] truncate max-w-[76px]"
+          >
+            #{{ tag }}
+          </span>
+          <span
+            v-if="store.selectedSearchTags.length > 2"
+            class="text-[10px] font-semibold text-indigo-300 shrink-0"
+          >
+            +{{ store.selectedSearchTags.length - 2 }}
+          </span>
+        </div>
+        <span v-else class="truncate text-neutral-500">
+          태그 선택/검색...
+        </span>
+
         <button
-          v-if="store.rawTagInput"
-          @click="store.rawTagInput = ''; store.executeSearch()"
-          class="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-200"
+          v-if="store.selectedSearchTags.length > 0"
+          type="button"
+          @click.stop="store.setSearchTags([])"
+          class="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-200 cursor-pointer"
+          title="선택된 태그 모두 해제"
         >
           <X class="w-3.5 h-3.5" />
         </button>

@@ -82,6 +82,8 @@ pub fn run() {
             commands::toggle_comic_is_new,
             commands::toggle_folder_is_new,
             commands::update_comic_comment,
+            commands::set_comic_tags,
+            commands::set_folder_tags,
             commands::add_tag_to_comic,
             commands::remove_tag_from_comic,
             commands::add_tag_to_folder,

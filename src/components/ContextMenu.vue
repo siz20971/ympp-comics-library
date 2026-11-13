@@ -13,6 +13,7 @@ import {
   Settings,
   Sparkles,
   Check,
+  Tag,
 } from 'lucide-vue-next';
 
 export interface ContextMenuTarget {
@@ -146,6 +147,23 @@ function handleStartScan() {
 
 function handleOpenSettings() {
   emit('open-settings');
+  emit('close');
+}
+
+function handleOpenTagPicker() {
+  if (props.target?.type === 'comic' && props.target.comic) {
+    store.openComicTagPicker(
+      props.target.comic.id,
+      props.target.comic.name,
+      props.target.comic.direct_tags
+    );
+  } else if (props.target?.type === 'folder' && props.target.folder) {
+    store.openFolderTagPicker(
+      props.target.folder.id,
+      props.target.folder.name,
+      props.target.folder.direct_tags
+    );
+  }
   emit('close');
 }
 
@@ -305,6 +323,17 @@ onUnmounted(() => {
       </div>
 
       <div class="h-px bg-neutral-800 my-1"></div>
+
+      <!-- Item 4.5: Tag Picker -->
+      <button
+        @click="handleOpenTagPicker"
+        class="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-neutral-800 text-left transition cursor-pointer"
+      >
+        <span class="flex items-center gap-2.5">
+          <Tag class="w-4 h-4 text-indigo-400" />
+          <span>태그 지정 / 편집</span>
+        </span>
+      </button>
 
       <!-- Item 5: Show in Explorer -->
       <button

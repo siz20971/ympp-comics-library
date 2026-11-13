@@ -474,6 +474,30 @@ pub async fn update_comic_comment(
 }
 
 #[tauri::command]
+pub async fn set_comic_tags(
+    file_id: i64,
+    tag_names: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let ctx = state.get_context().await?;
+    tokio::task::spawn_blocking(move || ctx.db.set_comic_tags(file_id, &tag_names).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn set_folder_tags(
+    folder_id: i64,
+    tag_names: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let ctx = state.get_context().await?;
+    tokio::task::spawn_blocking(move || ctx.db.set_folder_tags(folder_id, &tag_names).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn add_tag_to_comic(
     file_id: i64,
     tag_name: String,

@@ -8,6 +8,7 @@ import FolderCard from './components/FolderCard.vue';
 import ComicCard from './components/ComicCard.vue';
 import DetailPanel from './components/DetailPanel.vue';
 import SettingsModal from './components/SettingsModal.vue';
+import TagPickerModal from './components/TagPickerModal.vue';
 import StatusBar from './components/StatusBar.vue';
 import ContextMenu, { type ContextMenuTarget } from './components/ContextMenu.vue';
 import { FolderOpen, SearchX, BookOpen, Layers, Play, FolderSearch } from 'lucide-vue-next';
@@ -15,7 +16,6 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type { ComicFileItem, FolderItem } from './types';
 
 const store = useLibraryStore();
-const isSettingsOpen = ref(false);
 
 const contextMenuTarget = ref<ContextMenuTarget | null>(null);
 
@@ -256,7 +256,7 @@ function handleBackgroundContextMenu(e: MouseEvent) {
     @contextmenu.prevent.stop="handleBackgroundContextMenu"
   >
     <!-- Top Navigation -->
-    <TopNav @open-settings="isSettingsOpen = true" />
+    <TopNav @open-settings="store.openSettingsModal('general')" />
 
     <!-- Main Workspace (Center + Right Detail) -->
     <div class="flex-1 flex overflow-hidden relative">
@@ -442,15 +442,19 @@ function handleBackgroundContextMenu(e: MouseEvent) {
 
     <!-- Settings Modal -->
     <SettingsModal
-      v-if="isSettingsOpen"
-      @close="isSettingsOpen = false"
+      v-if="store.isSettingsOpen"
+      :initial-tab="store.settingsInitialTab"
+      @close="store.closeSettingsModal()"
     />
+
+    <!-- Dedicated Tag Picker Popup -->
+    <TagPickerModal />
 
     <!-- Custom Right Click Context Menu -->
     <ContextMenu
       :target="contextMenuTarget"
       @close="contextMenuTarget = null"
-      @open-settings="isSettingsOpen = true"
+      @open-settings="store.openSettingsModal('general')"
     />
   </div>
 </template>

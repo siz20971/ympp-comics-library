@@ -13,7 +13,17 @@ import type {
   AppSettings,
   TagItem,
   TagDetailItem,
+  SelectableTagOption,
+  TagPickerContext,
 } from '../types';
+
+export function cleanTagDisplay(raw: string): string {
+  return raw.trim().replace(/^#+/, '').trim();
+}
+
+export function normalizeTagKey(raw: string): string {
+  return cleanTagDisplay(raw).toLowerCase();
+}
 
 export const useLibraryStore = defineStore('library', () => {
   // State
@@ -82,6 +92,29 @@ export const useLibraryStore = defineStore('library', () => {
   const allTags = ref<TagItem[]>([]);
   const tagsWithCounts = ref<TagDetailItem[]>([]);
 
+  // Modal & Tag Picker states
+  const isSettingsOpen = ref(false);
+  const settingsInitialTab = ref<'general' | 'tags'>('general');
+  const tagPickerContext = ref<TagPickerContext | null>(null);
+
+  const availableTags = computed<SelectableTagOption[]>(() => {
+    const map = new Map<string, SelectableTagOption>();
+
+    for (const tag of allTags.value) {
+      const key = normalizeTagKey(tag.display_name || tag.name);
+      if (!key) continue;
+      map.set(key, {
+        key,
+        display_name: tag.display_name,
+        id: tag.id,
+      });
+    }
+
+    return Array.from(map.values()).sort((a, b) =>
+      a.display_name.localeCompare(b.display_name, 'ko')
+    );
+  });
+
   const searchQuery = ref<SearchQuery>({
     keywords: [],
     keyword_operator: 'AND',
@@ -97,6 +130,7 @@ export const useLibraryStore = defineStore('library', () => {
 
   const rawKeywordInput = ref('');
   const rawTagInput = ref('');
+  const selectedSearchTags = ref<string[]>([]);
 
   const scanProgress = ref<ScanProgress>({
     is_scanning: false,
@@ -335,14 +369,26 @@ export const useLibraryStore = defineStore('library', () => {
         .filter((s) => s.length > 0);
       searchQuery.value.keywords = kw;
 
-      const tg = rawTagInput.value
+      const typedTags = rawTagInput.value
         .split(' ')
-        .map((s) => s.trim().replace(/^#/, ''))
+        .map((s) => cleanTagDisplay(s))
         .filter((s) => s.length > 0);
+
+      const tgMap = new Map<string, string>();
+      for (const t of [...selectedSearchTags.value, ...typedTags]) {
+        const clean = cleanTagDisplay(t);
+        const key = clean.toLowerCase();
+        if (key && !tgMap.has(key)) {
+          tgMap.set(key, clean);
+        }
+      }
+      const tg = Array.from(tgMap.values());
       searchQuery.value.tag_names = tg;
       searchQuery.value.include_folder_tags = settings.value.include_folder_tags_in_search;
 
       if (kw.length === 0 && tg.length === 0 && searchQuery.value.min_rating === null && !searchQuery.value.extension) {
+        searchResults.value = [];
+        searchFolderResults.value = [];
         mode.value = 'browse';
         return;
       }
@@ -384,6 +430,7 @@ export const useLibraryStore = defineStore('library', () => {
   function clearSearch() {
     rawKeywordInput.value = '';
     rawTagInput.value = '';
+    selectedSearchTags.value = [];
     searchQuery.value.keywords = [];
     searchQuery.value.tag_names = [];
     searchQuery.value.min_rating = null;
@@ -392,6 +439,30 @@ export const useLibraryStore = defineStore('library', () => {
     searchFolderResults.value = [];
     mode.value = 'browse';
     clearSelection();
+  }
+
+  async function setSearchTags(tags: string[]) {
+    const seen = new Set<string>();
+    const cleaned: string[] = [];
+    for (const raw of tags) {
+      const display = cleanTagDisplay(raw);
+      const key = display.toLowerCase();
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        cleaned.push(display);
+      }
+    }
+    selectedSearchTags.value = cleaned;
+    rawTagInput.value = '';
+    await executeSearch();
+  }
+
+  async function removeSearchTag(tagName: string) {
+    const targetKey = normalizeTagKey(tagName);
+    selectedSearchTags.value = selectedSearchTags.value.filter(
+      (t) => normalizeTagKey(t) !== targetKey
+    );
+    await executeSearch();
   }
 
   async function selectComic(fileId: number, force: boolean = false) {
@@ -674,26 +745,53 @@ export const useLibraryStore = defineStore('library', () => {
   }
 
   // Tag Management Actions
-  async function createTag(name: string) {
-    if (!name.trim()) return;
+  async function createTag(name: string): Promise<{ created: boolean; duplicate: boolean; tag: TagItem | null }> {
+    const clean = cleanTagDisplay(name);
+    const key = clean.toLowerCase();
+    if (!clean) {
+      return { created: false, duplicate: false, tag: null };
+    }
     try {
-      await invoke('create_tag', { name: name.trim() });
+      const existing = allTags.value.find(
+        (t) => normalizeTagKey(t.display_name || t.name) === key
+      );
+      if (existing) {
+        return { created: false, duplicate: true, tag: existing };
+      }
+
+      const tag = await invoke<TagItem>('create_tag', { name: clean });
       await loadTags();
       await loadTagsWithCounts();
+      return { created: true, duplicate: false, tag };
     } catch (err) {
       console.error('Failed to create tag:', err);
       alert('태그 생성 실패: ' + err);
+      throw err;
     }
   }
 
   async function updateTag(id: number, newName: string) {
-    if (!newName.trim()) return;
+    const clean = cleanTagDisplay(newName);
+    if (!clean) return;
     try {
-      await invoke('update_tag', { id, newName: newName.trim() });
+      const existing = allTags.value.find(
+        (t) => t.id !== id && normalizeTagKey(t.display_name || t.name) === clean.toLowerCase()
+      );
+      if (existing) {
+        alert(`이미 존재하는 태그 '#${existing.display_name}'입니다.`);
+        return;
+      }
+
+      await invoke('update_tag', { id, newName: clean });
       await loadTags();
       await loadTagsWithCounts();
-      if (selectedComicId.value) await selectComic(selectedComicId.value);
-      if (selectedFolderId.value) await selectFolder(selectedFolderId.value);
+      if (selectedComicId.value) await selectComic(selectedComicId.value, true);
+      if (selectedFolderId.value) await selectFolder(selectedFolderId.value, true);
+      if (mode.value === 'browse') {
+        await loadFolder(currentFolderId.value, true);
+      } else {
+        await executeSearch();
+      }
     } catch (err) {
       console.error('Failed to update tag:', err);
       alert('태그 수정 실패: ' + err);
@@ -705,14 +803,153 @@ export const useLibraryStore = defineStore('library', () => {
       await invoke('delete_tag', { id });
       await loadTags();
       await loadTagsWithCounts();
-      if (selectedComicId.value) await selectComic(selectedComicId.value);
-      if (selectedFolderId.value) await selectFolder(selectedFolderId.value);
+      if (selectedComicId.value) await selectComic(selectedComicId.value, true);
+      if (selectedFolderId.value) await selectFolder(selectedFolderId.value, true);
       if (mode.value === 'browse') {
-        await loadFolder(currentFolderId.value);
+        await loadFolder(currentFolderId.value, true);
+      } else {
+        await executeSearch();
       }
     } catch (err) {
       console.error('Failed to delete tag:', err);
       alert('태그 삭제 실패: ' + err);
+    }
+  }
+
+  async function ensureTagExists(
+    rawName: string
+  ): Promise<{ created: boolean; duplicate: boolean; tag: SelectableTagOption | null }> {
+    const clean = cleanTagDisplay(rawName);
+    const key = clean.toLowerCase();
+    if (!key) {
+      return { created: false, duplicate: false, tag: null };
+    }
+
+    const existing = availableTags.value.find((t) => t.key === key);
+    if (existing) {
+      return { created: false, duplicate: true, tag: existing };
+    }
+
+    const res = await createTag(clean);
+    if (!res.tag) {
+      return { created: false, duplicate: false, tag: null };
+    }
+    return {
+      created: res.created,
+      duplicate: res.duplicate,
+      tag: {
+        key: normalizeTagKey(res.tag.display_name || res.tag.name),
+        display_name: res.tag.display_name,
+        id: res.tag.id,
+      },
+    };
+  }
+
+  async function setComicTags(fileId: number, tagNames: string[]) {
+    try {
+      await invoke('set_comic_tags', { fileId, tagNames });
+      if (selectedComicId.value === fileId) {
+        await selectComic(fileId, true);
+      }
+      // Update inline card tags immediately if refreshed detail isn't open
+      const updatedDetail =
+        selectedComicId.value === fileId
+          ? selectedComicDetail.value
+          : await invoke<ComicDetail | null>('get_comic_detail', { fileId });
+      if (updatedDetail) {
+        const fileItem = folderContent.value.files.find((f) => f.id === fileId);
+        if (fileItem) fileItem.direct_tags = updatedDetail.direct_tags;
+        const searchItem = searchResults.value.find((f) => f.id === fileId);
+        if (searchItem) searchItem.direct_tags = updatedDetail.direct_tags;
+      }
+      await loadTags();
+    } catch (err) {
+      console.error('Failed to set comic tags:', err);
+    }
+  }
+
+  async function setFolderTags(folderId: number, tagNames: string[]) {
+    try {
+      await invoke('set_folder_tags', { folderId, tagNames });
+      if (selectedFolderId.value === folderId) {
+        await selectFolder(folderId, true);
+      }
+      if (selectedComicId.value) {
+        await selectComic(selectedComicId.value, true);
+      }
+      if (mode.value === 'search') {
+        await executeSearch();
+      } else {
+        await loadFolder(currentFolderId.value, true);
+      }
+      await loadTags();
+    } catch (err) {
+      console.error('Failed to set folder tags:', err);
+    }
+  }
+
+  function openSettingsModal(tab: 'general' | 'tags' = 'general') {
+    settingsInitialTab.value = tab;
+    isSettingsOpen.value = true;
+  }
+
+  function closeSettingsModal() {
+    isSettingsOpen.value = false;
+  }
+
+  function openSearchTagPicker() {
+    tagPickerContext.value = {
+      mode: 'search',
+      initialTags: [...selectedSearchTags.value],
+    };
+  }
+
+  function openComicTagPicker(comicId: number, title: string, currentTags: TagItem[]) {
+    tagPickerContext.value = {
+      mode: 'comic',
+      targetId: comicId,
+      targetTitle: title,
+      initialTags: currentTags.map((t) => t.display_name),
+    };
+  }
+
+  function openFolderTagPicker(folderId: number, title: string, currentTags: TagItem[]) {
+    tagPickerContext.value = {
+      mode: 'folder',
+      targetId: folderId,
+      targetTitle: title,
+      initialTags: currentTags.map((t) => t.display_name),
+    };
+  }
+
+  async function openFolderTagPickerById(folderId: number, fallbackTitle: string) {
+    try {
+      const detail = await invoke<FolderDetail | null>('get_folder_detail', { folderId });
+      if (detail) {
+        openFolderTagPicker(detail.id, detail.name, detail.direct_tags);
+      } else {
+        openFolderTagPicker(folderId, fallbackTitle, []);
+      }
+    } catch (err) {
+      console.error('Failed to load folder detail for tag picker:', err);
+    }
+  }
+
+  function closeTagPicker() {
+    tagPickerContext.value = null;
+  }
+
+  async function applyTagPickerSelection(selectedTagNames: string[]) {
+    const ctx = tagPickerContext.value;
+    if (!ctx) return;
+    tagPickerContext.value = null;
+
+    if (ctx.mode === 'search') {
+      await setSearchTags(selectedTagNames);
+    } else if (ctx.mode === 'comic' && ctx.targetId !== undefined) {
+      await setComicTags(ctx.targetId, selectedTagNames);
+    } else if (ctx.mode === 'folder' && ctx.targetId !== undefined) {
+      await setFolderTags(ctx.targetId, selectedTagNames);
     }
   }
 
@@ -769,10 +1006,15 @@ export const useLibraryStore = defineStore('library', () => {
     searchQuery,
     rawKeywordInput,
     rawTagInput,
+    selectedSearchTags,
     scanProgress,
     isScanning,
     allTags,
     tagsWithCounts,
+    availableTags,
+    isSettingsOpen,
+    settingsInitialTab,
+    tagPickerContext,
     init,
     setLibraryPath,
     loadFolder,
@@ -784,6 +1026,8 @@ export const useLibraryStore = defineStore('library', () => {
     cancelScan,
     executeSearch,
     clearSearch,
+    setSearchTags,
+    removeSearchTag,
     selectComic,
     selectFolder,
     openComic,
@@ -795,6 +1039,8 @@ export const useLibraryStore = defineStore('library', () => {
     toggleComicIsNew,
     toggleFolderIsNew,
     updateComicComment,
+    setComicTags,
+    setFolderTags,
     addTagToComic,
     removeTagFromComic,
     addTagToFolder,
@@ -803,6 +1049,15 @@ export const useLibraryStore = defineStore('library', () => {
     createTag,
     updateTag,
     deleteTag,
+    ensureTagExists,
+    openSettingsModal,
+    closeSettingsModal,
+    openSearchTagPicker,
+    openComicTagPicker,
+    openFolderTagPicker,
+    openFolderTagPickerById,
+    closeTagPicker,
+    applyTagPickerSelection,
     rebuildDatabase,
     saveSettings,
   };

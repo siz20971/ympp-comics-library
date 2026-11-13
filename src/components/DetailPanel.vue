@@ -28,13 +28,8 @@ const emit = defineEmits<{
 const store = useLibraryStore();
 
 // Comic states
-const newDirectTag = ref('');
-const newInheritedTag = ref('');
 const isEditingComment = ref(false);
 const commentDraft = ref('');
-
-// Folder states
-const newFolderTag = ref('');
 
 const folderCoverSrc = computed(() => resolveCoverUrl(store.selectedFolderDetail?.cover_data_url));
 const comicCoverSrc = computed(() => resolveCoverUrl(store.selectedComicDetail?.cover_data_url));
@@ -57,27 +52,6 @@ watch(
   },
   { immediate: true }
 );
-
-function handleAddComicTag() {
-  if (newDirectTag.value.trim() && store.selectedComicDetail) {
-    store.addTagToComic(store.selectedComicDetail.id, newDirectTag.value.trim());
-    newDirectTag.value = '';
-  }
-}
-
-function handleAddInheritedTag() {
-  if (newInheritedTag.value.trim() && store.selectedComicDetail) {
-    store.addTagToFolder(store.selectedComicDetail.folder_id, newInheritedTag.value.trim());
-    newInheritedTag.value = '';
-  }
-}
-
-function handleAddFolderTag() {
-  if (newFolderTag.value.trim() && store.selectedFolderDetail) {
-    store.addTagToFolder(store.selectedFolderDetail.id, newFolderTag.value.trim());
-    newFolderTag.value = '';
-  }
-}
 
 function handleSaveComment() {
   if (store.selectedComicDetail) {
@@ -288,21 +262,20 @@ function formatDate(dateStr: string): string {
               </button>
             </span>
 
-            <div class="flex items-center gap-1 w-full mt-1">
-              <input
-                v-model="newFolderTag"
-                @keydown.enter="handleAddFolderTag"
-                type="text"
-                placeholder="+ 폴더 태그 추가... (Enter)"
-                class="flex-1 bg-neutral-900 border border-neutral-800 focus:border-indigo-500 rounded px-2 py-1 text-xs text-white focus:outline-none"
-              />
-              <button
-                @click="handleAddFolderTag"
-                class="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-indigo-400 hover:text-white cursor-pointer"
-              >
-                <Plus class="w-3.5 h-3.5" />
-              </button>
-            </div>
+            <button
+              type="button"
+              @click="
+                store.openFolderTagPicker(
+                  store.selectedFolderDetail.id,
+                  store.selectedFolderDetail.name,
+                  store.selectedFolderDetail.direct_tags
+                )
+              "
+              class="w-full mt-1 py-1.5 px-2.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 hover:border-indigo-500/60 text-indigo-300 hover:text-white text-xs font-medium flex items-center justify-center gap-1.5 transition cursor-pointer"
+            >
+              <Plus class="w-3.5 h-3.5" />
+              태그 선택 / 추가
+            </button>
           </div>
         </div>
 
@@ -440,22 +413,21 @@ function formatDate(dateStr: string): string {
                 </button>
               </span>
 
-              <!-- Tag Input -->
-              <div class="flex items-center gap-1 w-full mt-1">
-                <input
-                  v-model="newDirectTag"
-                  @keydown.enter="handleAddComicTag"
-                  type="text"
-                  placeholder="+ 새 태그 추가... (Enter)"
-                  class="flex-1 bg-neutral-900 border border-neutral-800 focus:border-indigo-500 rounded px-2 py-1 text-xs text-white focus:outline-none"
-                />
-                <button
-                  @click="handleAddComicTag"
-                  class="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-indigo-400 hover:text-white cursor-pointer"
-                >
-                  <Plus class="w-3.5 h-3.5" />
-                </button>
-              </div>
+              <!-- Tag Picker Trigger -->
+              <button
+                type="button"
+                @click="
+                  store.openComicTagPicker(
+                    store.selectedComicDetail.id,
+                    store.selectedComicDetail.name,
+                    store.selectedComicDetail.direct_tags
+                  )
+                "
+                class="w-full mt-1 py-1.5 px-2.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 hover:border-indigo-500/60 text-indigo-300 hover:text-white text-xs font-medium flex items-center justify-center gap-1.5 transition cursor-pointer"
+              >
+                <Plus class="w-3.5 h-3.5" />
+                태그 선택 / 추가
+              </button>
             </div>
           </div>
 
@@ -492,23 +464,20 @@ function formatDate(dateStr: string): string {
                 상속된 태그 없음
               </p>
 
-              <!-- Tag Input for Folder Tag from Comic View -->
-              <div class="flex items-center gap-1 w-full mt-1">
-                <input
-                  v-model="newInheritedTag"
-                  @keydown.enter="handleAddInheritedTag"
-                  type="text"
-                  placeholder="+ 상위 폴더에 태그 추가... (Enter)"
-                  class="flex-1 bg-neutral-900 border border-neutral-800 focus:border-indigo-500 rounded px-2 py-1 text-xs text-white focus:outline-none"
-                />
-                <button
-                  @click="handleAddInheritedTag"
-                  class="p-1 rounded bg-neutral-800 hover:bg-neutral-700 text-indigo-400 hover:text-white cursor-pointer"
-                  title="상위 폴더에 태그 추가"
-                >
-                  <Plus class="w-3.5 h-3.5" />
-                </button>
-              </div>
+              <!-- Tag Picker for Parent Folder from Comic View -->
+              <button
+                type="button"
+                @click="
+                  store.openFolderTagPickerById(
+                    store.selectedComicDetail.folder_id,
+                    store.selectedComicDetail.folder_name
+                  )
+                "
+                class="w-full mt-1 py-1.5 px-2.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 hover:border-indigo-500/60 text-neutral-300 hover:text-white text-xs font-medium flex items-center justify-center gap-1.5 transition cursor-pointer"
+              >
+                <Plus class="w-3.5 h-3.5 text-indigo-400" />
+                상위 폴더 태그 선택 / 추가
+              </button>
             </div>
           </div>
         </div>
