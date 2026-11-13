@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use rusqlite::{params, Connection, Result};
-use crate::models::{BreadcrumbItem, ComicDetail, ComicFileItem, FolderItem, Library, SearchQuery, TagItem};
+use crate::models::{BreadcrumbItem, ComicDetail, ComicFileItem, FolderContent, FolderItem, Library, SearchQuery, TagItem};
 
 pub struct Database {
     #[allow(dead_code)]
@@ -42,6 +42,11 @@ impl Database {
             let _ = conn.execute_batch("PRAGMA journal_mode = DELETE;");
         }
 
+        let user_version: i64 = conn.query_row("PRAGMA user_version;", [], |r| r.get(0)).unwrap_or(0);
+        if user_version >= 2 {
+            return Ok(());
+        }
+
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS libraries (
@@ -60,6 +65,7 @@ impl Database {
                 parent_id INTEGER,
                 rating INTEGER NOT NULL DEFAULT 0,
                 is_new INTEGER NOT NULL DEFAULT 1,
+                cover_status TEXT NOT NULL DEFAULT 'unknown',
                 last_scanned_at TEXT,
                 UNIQUE(library_id, relative_path),
                 FOREIGN KEY(library_id) REFERENCES libraries(id) ON DELETE CASCADE,
@@ -115,6 +121,7 @@ impl Database {
             );
 
             CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
+            CREATE INDEX IF NOT EXISTS idx_folders_lib_parent ON folders(library_id, parent_id);
             CREATE INDEX IF NOT EXISTS idx_comic_files_folder ON comic_files(folder_id);
             CREATE INDEX IF NOT EXISTS idx_comic_files_rating ON comic_files(rating);
             CREATE INDEX IF NOT EXISTS idx_comic_files_is_new ON comic_files(is_new);
@@ -122,11 +129,24 @@ impl Database {
             "#
         )?;
 
-        // Auto-migrate: add is_new column to folders if existing DB
-        let _ = conn.execute("ALTER TABLE folders ADD COLUMN is_new INTEGER NOT NULL DEFAULT 1", []);
+        // Auto-migrate existing DBs without failing on duplicate columns
+        let mut existing_cols = std::collections::HashSet::new();
+        {
+            let mut info_stmt = conn.prepare("PRAGMA table_info(folders)")?;
+            let cols = info_stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for col in cols.flatten() {
+                existing_cols.insert(col);
+            }
+        }
+        if !existing_cols.contains("is_new") {
+            conn.execute("ALTER TABLE folders ADD COLUMN is_new INTEGER NOT NULL DEFAULT 1", [])?;
+        }
+        if !existing_cols.contains("cover_status") {
+            conn.execute("ALTER TABLE folders ADD COLUMN cover_status TEXT NOT NULL DEFAULT 'unknown'", [])?;
+        }
 
-        // Create index on migrated folders.is_new column
-        let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_folders_is_new ON folders(is_new)", []);
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_folders_is_new ON folders(is_new)", [])?;
+        conn.execute_batch("PRAGMA user_version = 2;")?;
 
         Ok(())
     }
@@ -220,13 +240,17 @@ impl Database {
 
     pub fn get_folder_by_id(&self, folder_id: i64) -> Result<Option<FolderItem>> {
         let conn = self.conn()?;
+        self.get_folder_by_id_with_conn(&conn, folder_id)
+    }
+
+    fn get_folder_by_id_with_conn(&self, conn: &Connection, folder_id: i64) -> Result<Option<FolderItem>> {
         let mut stmt = conn.prepare(
-            "SELECT id, library_id, relative_path, name, parent_id, rating, is_new FROM folders WHERE id = ?1"
+            "SELECT id, library_id, relative_path, name, parent_id, rating, is_new, cover_status FROM folders WHERE id = ?1"
         )?;
         let mut rows = stmt.query(params![folder_id])?;
         if let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
-            let tags = self.get_direct_folder_tags(&conn, id)?;
+            let tags = self.get_direct_folder_tags(conn, id)?;
             Ok(Some(FolderItem {
                 id,
                 library_id: row.get(1)?,
@@ -235,6 +259,7 @@ impl Database {
                 parent_id: row.get(4)?,
                 rating: row.get(5)?,
                 is_new: row.get(6)?,
+                cover_status: row.get(7)?,
                 cover_data_url: None,
                 direct_tags: tags,
             }))
@@ -245,24 +270,28 @@ impl Database {
 
     pub fn get_subfolders(&self, lib_id: i64, parent_id: Option<i64>) -> Result<Vec<FolderItem>> {
         let conn = self.conn()?;
+        self.get_subfolders_with_conn(&conn, lib_id, parent_id)
+    }
+
+    fn get_subfolders_with_conn(&self, conn: &Connection, lib_id: i64, parent_id: Option<i64>) -> Result<Vec<FolderItem>> {
         let mut results = Vec::new();
 
-        let row_tuples: Vec<(i64, i64, String, String, Option<i64>, i32, bool)> = match parent_id {
+        let row_tuples: Vec<(i64, i64, String, String, Option<i64>, i32, bool, String)> = match parent_id {
             Some(pid) => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, library_id, relative_path, name, parent_id, rating, is_new FROM folders WHERE library_id = ?1 AND parent_id = ?2 ORDER BY name ASC"
+                    "SELECT id, library_id, relative_path, name, parent_id, rating, is_new, cover_status FROM folders WHERE library_id = ?1 AND parent_id = ?2 ORDER BY name ASC"
                 )?;
                 let rows = stmt.query_map(params![lib_id, pid], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
             None => {
                 let mut stmt = conn.prepare(
-                    "SELECT id, library_id, relative_path, name, parent_id, rating, is_new FROM folders WHERE library_id = ?1 AND (parent_id IS NULL OR parent_id = 0) ORDER BY name ASC"
+                    "SELECT id, library_id, relative_path, name, parent_id, rating, is_new, cover_status FROM folders WHERE library_id = ?1 AND (parent_id IS NULL OR parent_id = 0) ORDER BY name ASC"
                 )?;
                 let rows = stmt.query_map(params![lib_id], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()?
             }
@@ -331,7 +360,7 @@ impl Database {
             }
         }
 
-        for (id, lib_id, rel_path, name, pid, rating, is_new) in row_tuples {
+        for (id, lib_id, rel_path, name, pid, rating, is_new, cover_status) in row_tuples {
             let tags = tag_map.remove(&id).unwrap_or_default();
             results.push(FolderItem {
                 id,
@@ -341,10 +370,236 @@ impl Database {
                 parent_id: pid,
                 rating,
                 is_new,
+                cover_status,
                 cover_data_url: None,
                 direct_tags: tags,
             });
         }
+        Ok(results)
+    }
+
+    /// Fetches all data needed for `get_folder_content` under a single DB lock.
+    pub fn get_folder_content_bundle(&self, folder_id: Option<i64>) -> Result<Option<FolderContent>> {
+        let conn = self.conn()?;
+        let mut lib_stmt = conn.prepare("SELECT id FROM libraries ORDER BY id DESC LIMIT 1")?;
+        let lib_id: Option<i64> = lib_stmt.query_row([], |r| r.get(0)).ok();
+        let lib_id = match lib_id {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+
+        let effective_folder_id = match folder_id {
+            Some(id) if id > 0 => id,
+            _ => {
+                let mut root_stmt = conn.prepare("SELECT id FROM folders WHERE library_id = ?1 AND relative_path = ''")?;
+                root_stmt.query_row(params![lib_id], |r| r.get(0)).unwrap_or(0)
+            }
+        };
+
+        let current_folder = if effective_folder_id > 0 {
+            self.get_folder_by_id_with_conn(&conn, effective_folder_id)?
+        } else {
+            None
+        };
+
+        let parent_folder = if let Some(ref cf) = current_folder {
+            if let Some(pid) = cf.parent_id {
+                self.get_folder_by_id_with_conn(&conn, pid)?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let subfolders = if effective_folder_id > 0 {
+            self.get_subfolders_with_conn(&conn, lib_id, Some(effective_folder_id))?
+        } else {
+            self.get_subfolders_with_conn(&conn, lib_id, None)?
+        };
+
+        let files = if effective_folder_id > 0 {
+            self.get_folder_files_with_conn(&conn, effective_folder_id)?
+        } else {
+            Vec::new()
+        };
+
+        let breadcrumbs = self.get_breadcrumbs_with_conn(&conn, lib_id, current_folder.as_ref())?;
+
+        Ok(Some(FolderContent {
+            current_folder,
+            parent_folder,
+            subfolders,
+            files,
+            breadcrumbs,
+        }))
+    }
+
+    pub fn update_folder_cover_status(&self, folder_id: i64, status: &str) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE folders SET cover_status = ?1 WHERE id = ?2",
+            params![status, folder_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn batch_mark_folders_cover_ready(&self, folder_ids: &[i64]) -> Result<()> {
+        if folder_ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE folders SET cover_status = 'ready' WHERE id = ?1")?;
+            for &fid in folder_ids {
+                stmt.execute(params![fid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn reset_empty_folder_cover_statuses(&self, lib_id: i64) -> Result<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE folders SET cover_status = 'unknown' WHERE library_id = ?1 AND cover_status = 'empty'",
+            params![lib_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn batch_upsert_folders(
+        &self,
+        lib_id: i64,
+        root_folder_id: i64,
+        folders: &[(PathBuf, String, String)],
+    ) -> Result<(Vec<(i64, PathBuf)>, HashMap<String, i64>)> {
+        let mut conn = self.conn()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let tx = conn.transaction()?;
+
+        let mut path_to_id: HashMap<String, i64> = HashMap::with_capacity(folders.len() + 1);
+        path_to_id.insert(String::new(), root_folder_id);
+
+        // Preload existing folder ids for this library to avoid per-row SELECT
+        {
+            let mut existing_stmt = tx.prepare("SELECT relative_path, id FROM folders WHERE library_id = ?1")?;
+            let rows = existing_stmt.query_map(params![lib_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for row in rows.flatten() {
+                path_to_id.insert(row.0, row.1);
+            }
+        }
+
+        let mut upserted: Vec<(i64, PathBuf)> = Vec::with_capacity(folders.len());
+        {
+            let mut upsert_stmt = tx.prepare(
+                r#"
+                INSERT INTO folders (library_id, relative_path, name, parent_id, last_scanned_at)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(library_id, relative_path) DO UPDATE SET
+                    name = excluded.name,
+                    parent_id = excluded.parent_id,
+                    last_scanned_at = excluded.last_scanned_at
+                "#
+            )?;
+            let mut select_stmt = tx.prepare(
+                "SELECT id FROM folders WHERE library_id = ?1 AND relative_path = ?2"
+            )?;
+
+            for (folder_path, rel_path, name) in folders {
+                let parent_rel = match rel_path.rfind('/') {
+                    Some(idx) => &rel_path[..idx],
+                    None => "",
+                };
+                let parent_id = if parent_rel.is_empty() {
+                    Some(root_folder_id)
+                } else {
+                    path_to_id.get(parent_rel).copied()
+                };
+
+                upsert_stmt.execute(params![lib_id, rel_path, name, parent_id, now])?;
+                let fid = match path_to_id.get(rel_path).copied() {
+                    Some(id) => id,
+                    None => {
+                        let id: i64 = select_stmt.query_row(params![lib_id, rel_path], |r| r.get(0))?;
+                        path_to_id.insert(rel_path.clone(), id);
+                        id
+                    }
+                };
+                upserted.push((fid, folder_path.clone()));
+            }
+        }
+
+        tx.commit()?;
+        Ok((upserted, path_to_id))
+    }
+
+    pub fn batch_upsert_comic_files(
+        &self,
+        root_folder_id: i64,
+        folder_map: &HashMap<String, i64>,
+        files: &[(PathBuf, String, String, i64, String)],
+    ) -> Result<Vec<(i64, PathBuf, String, bool)>> {
+        let mut conn = self.conn()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let tx = conn.transaction()?;
+
+        // Preload existing comic metadata to skip unchanged selects
+        let mut existing_map: HashMap<String, (i64, String, i64)> = HashMap::with_capacity(files.len());
+        {
+            let mut existing_stmt = tx.prepare("SELECT relative_path, id, modified_at, size FROM comic_files")?;
+            let rows = existing_stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)))
+            })?;
+            for row in rows.flatten() {
+                existing_map.insert(row.0, row.1);
+            }
+        }
+
+        let mut results: Vec<(i64, PathBuf, String, bool)> = Vec::with_capacity(files.len());
+        {
+            let mut update_stmt = tx.prepare(
+                "UPDATE comic_files SET folder_id = ?1, name = ?2, extension = ?3, size = ?4, modified_at = ?5, status = 'active' WHERE id = ?6"
+            )?;
+            let mut insert_stmt = tx.prepare(
+                r#"
+                INSERT INTO comic_files (folder_id, relative_path, name, extension, size, modified_at, rating, comment, is_new, status, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, '', 1, 'active', ?7)
+                "#
+            )?;
+
+            for (full_path, rel_path, name, size, mod_time) in files {
+                let parent_rel = match rel_path.rfind('/') {
+                    Some(idx) => &rel_path[..idx],
+                    None => "",
+                };
+                let folder_id = if parent_rel.is_empty() {
+                    root_folder_id
+                } else {
+                    folder_map.get(parent_rel).copied().unwrap_or(root_folder_id)
+                };
+                let ext = full_path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+
+                if let Some(&(id, ref old_mod, old_size)) = existing_map.get(rel_path) {
+                    let file_changed = old_mod != mod_time || old_size != *size;
+                    update_stmt.execute(params![folder_id, name, ext, size, mod_time, id])?;
+                    results.push((id, full_path.clone(), mod_time.clone(), file_changed));
+                } else {
+                    insert_stmt.execute(params![folder_id, rel_path, name, ext, size, mod_time, now])?;
+                    let id = tx.last_insert_rowid();
+                    results.push((id, full_path.clone(), mod_time.clone(), true));
+                }
+            }
+        }
+
+        tx.commit()?;
         Ok(results)
     }
 
@@ -398,6 +653,10 @@ impl Database {
 
     pub fn get_folder_files(&self, folder_id: i64) -> Result<Vec<ComicFileItem>> {
         let conn = self.conn()?;
+        self.get_folder_files_with_conn(&conn, folder_id)
+    }
+
+    fn get_folder_files_with_conn(&self, conn: &Connection, folder_id: i64) -> Result<Vec<ComicFileItem>> {
         let mut stmt = conn.prepare(
             r#"
             SELECT c.id, c.folder_id, c.relative_path, c.name, c.extension, c.size, c.modified_at,
@@ -431,7 +690,7 @@ impl Database {
         }
 
         // Compute inherited tags ONCE for the folder instead of per file
-        let inherited_tags = self.get_inherited_tags_for_folder(&conn, folder_id)?;
+        let inherited_tags = self.get_inherited_tags_for_folder(conn, folder_id)?;
 
         // Fetch all direct tags for all files in this folder in ONE batch query
         let mut direct_tag_map: HashMap<i64, Vec<TagItem>> = HashMap::new();
@@ -1027,7 +1286,7 @@ impl Database {
 
         let sql = format!(
             r#"
-            SELECT f.id, f.library_id, f.relative_path, f.name, f.parent_id, f.rating, f.is_new
+            SELECT f.id, f.library_id, f.relative_path, f.name, f.parent_id, f.rating, f.is_new, f.cover_status
             FROM folders f
             WHERE {}
             ORDER BY {} {}
@@ -1050,6 +1309,7 @@ impl Database {
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, i32>(5)?,
                 row.get::<_, bool>(6)?,
+                row.get::<_, String>(7)?,
             ))
         })?;
 
@@ -1096,7 +1356,7 @@ impl Database {
         }
 
         let mut folders = Vec::with_capacity(raw_folders.len());
-        for (id, lib_id, rel_path, name, parent_id, rating, is_new) in raw_folders {
+        for (id, lib_id, rel_path, name, parent_id, rating, is_new, cover_status) in raw_folders {
             let direct_tags = direct_tag_map.remove(&id).unwrap_or_default();
             folders.push(FolderItem {
                 id,
@@ -1106,6 +1366,7 @@ impl Database {
                 parent_id,
                 rating,
                 is_new,
+                cover_status,
                 cover_data_url: None,
                 direct_tags,
             });
@@ -1212,6 +1473,11 @@ impl Database {
     }
 
     pub fn get_breadcrumbs(&self, lib_id: i64, current_folder: Option<&FolderItem>) -> Result<Vec<BreadcrumbItem>> {
+        let conn = self.conn()?;
+        self.get_breadcrumbs_with_conn(&conn, lib_id, current_folder)
+    }
+
+    fn get_breadcrumbs_with_conn(&self, conn: &Connection, lib_id: i64, current_folder: Option<&FolderItem>) -> Result<Vec<BreadcrumbItem>> {
         let mut breadcrumbs = vec![BreadcrumbItem {
             id: None,
             name: "라이브러리 홈".to_string(),
@@ -1220,7 +1486,6 @@ impl Database {
 
         if let Some(cf) = current_folder {
             if !cf.relative_path.is_empty() {
-                let conn = self.conn()?;
                 let mut stmt = conn.prepare("SELECT id FROM folders WHERE library_id = ?1 AND relative_path = ?2")?;
                 let parts: Vec<&str> = cf.relative_path.split('/').collect();
                 let mut accumulated = String::new();
@@ -1258,43 +1523,35 @@ impl Database {
             return Ok((Some(rel_path), None, Vec::new()));
         }
 
-        // 1. Check if there is a comic file inside this folder or its descendants
-        let like_pattern = format!("{}/%", rel_path);
-        let mut comic_stmt = conn.prepare(
-            r#"
-            SELECT c.id
-            FROM comic_files c
-            JOIN folders f ON c.folder_id = f.id
-            WHERE f.library_id = ?1
-              AND c.status = 'active'
-              AND (c.folder_id = ?2 OR f.relative_path LIKE ?3)
-            ORDER BY f.relative_path ASC, c.name ASC
-            LIMIT 1
-            "#
+        // 1. Check direct comic file in this folder first (uses idx_comic_files_folder)
+        let mut direct_stmt = conn.prepare(
+            "SELECT id FROM comic_files WHERE folder_id = ?1 AND status = 'active' ORDER BY name ASC LIMIT 1"
         )?;
-        let first_comic_id: Option<i64> = comic_stmt
-            .query_row(params![lib_id, folder_id, &like_pattern], |r| r.get(0))
-            .ok();
+        let mut first_comic_id: Option<i64> = direct_stmt.query_row(params![folder_id], |r| r.get(0)).ok();
 
-        // 2. Also collect up to 5 child folder relative_paths
-        let mut child_stmt = conn.prepare(
-            r#"
-            SELECT relative_path
-            FROM folders
-            WHERE library_id = ?1 AND parent_id = ?2
-            ORDER BY name ASC
-            LIMIT 5
-            "#
-        )?;
-        let rows = child_stmt.query_map(params![lib_id, folder_id], |r| r.get::<_, String>(0))?;
-        let mut child_paths = Vec::new();
-        for r in rows {
-            if let Ok(p) = r {
-                child_paths.push(p);
-            }
+        // 2. If none, check descendant folders using binary B-tree prefix range on UNIQUE(library_id, relative_path)
+        if first_comic_id.is_none() {
+            let prefix_start = format!("{}/", rel_path);
+            let prefix_end = format!("{}0", rel_path);
+            let mut desc_stmt = conn.prepare(
+                r#"
+                SELECT c.id
+                FROM folders f
+                JOIN comic_files c ON c.folder_id = f.id
+                WHERE f.library_id = ?1
+                  AND f.relative_path >= ?2
+                  AND f.relative_path < ?3
+                  AND c.status = 'active'
+                ORDER BY f.relative_path ASC, c.name ASC
+                LIMIT 1
+                "#
+            )?;
+            first_comic_id = desc_stmt
+                .query_row(params![lib_id, &prefix_start, &prefix_end], |r| r.get(0))
+                .ok();
         }
 
-        Ok((Some(rel_path), first_comic_id, child_paths))
+        Ok((Some(rel_path), first_comic_id, Vec::new()))
     }
 
     pub fn rebuild_database(&self) -> Result<()> {
@@ -1522,7 +1779,52 @@ mod tests {
         assert_eq!(folder.name, "Sub");
         assert_eq!(folder.rating, 3);
         assert!(folder.is_new, "Migrated folder must have is_new = true by default");
+        assert_eq!(folder.cover_status, "unknown");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_folder_content_bundle_and_cover_candidates() {
+        let db = setup_test_db();
+        let lib = db.get_or_create_library("D:/TestBundle").unwrap();
+        let root_id = db.upsert_folder(lib.id, "", "Root", None).unwrap();
+
+        let folders_input = vec![
+            (PathBuf::from("D:/TestBundle/Manga"), "Manga".to_string(), "Manga".to_string()),
+            (PathBuf::from("D:/TestBundle/Manga2"), "Manga2".to_string(), "Manga2".to_string()),
+            (PathBuf::from("D:/TestBundle/Manga/Sub"), "Manga/Sub".to_string(), "Sub".to_string()),
+        ];
+        let (upserted, folder_map) = db.batch_upsert_folders(lib.id, root_id, &folders_input).unwrap();
+        assert_eq!(upserted.len(), 3);
+        let manga_id = folder_map["Manga"];
+        let manga2_id = folder_map["Manga2"];
+        let sub_id = folder_map["Manga/Sub"];
+
+        let files_input = vec![
+            (PathBuf::from("D:/TestBundle/Manga2/other.cbz"), "Manga2/other.cbz".to_string(), "other.cbz".to_string(), 100, "t1".to_string()),
+            (PathBuf::from("D:/TestBundle/Manga/Sub/ch1.cbz"), "Manga/Sub/ch1.cbz".to_string(), "ch1.cbz".to_string(), 200, "t2".to_string()),
+        ];
+        let upserted_files = db.batch_upsert_comic_files(root_id, &folder_map, &files_input).unwrap();
+        assert_eq!(upserted_files.len(), 2);
+        let ch1_id = upserted_files[1].0;
+
+        // Manga has no direct comic, only descendant in Manga/Sub; must NOT match Manga2/other.cbz
+        let (_, cand_id, _) = db.get_folder_cover_candidates(manga_id).unwrap();
+        assert_eq!(cand_id, Some(ch1_id));
+
+        // Cover status transitions
+        db.update_folder_cover_status(manga2_id, "empty").unwrap();
+        db.batch_mark_folders_cover_ready(&[sub_id]).unwrap();
+        let bundle = db.get_folder_content_bundle(None).unwrap().unwrap();
+        assert_eq!(bundle.subfolders.len(), 2);
+        assert_eq!(bundle.subfolders[0].id, manga_id);
+        assert_eq!(bundle.subfolders[0].cover_status, "unknown");
+        assert_eq!(bundle.subfolders[1].id, manga2_id);
+        assert_eq!(bundle.subfolders[1].cover_status, "empty");
+
+        db.reset_empty_folder_cover_statuses(lib.id).unwrap();
+        let reloaded_m2 = db.get_folder_by_id(manga2_id).unwrap().unwrap();
+        assert_eq!(reloaded_m2.cover_status, "unknown");
     }
 }

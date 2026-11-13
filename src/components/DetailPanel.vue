@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useLibraryStore } from '../stores/libraryStore';
+import { resolveCoverUrl } from '../utils/coverUrl';
 import {
   X,
   Play,
@@ -34,6 +35,18 @@ const commentDraft = ref('');
 
 // Folder states
 const newFolderTag = ref('');
+
+const folderCoverSrc = computed(() => resolveCoverUrl(store.selectedFolderDetail?.cover_data_url));
+const comicCoverSrc = computed(() => resolveCoverUrl(store.selectedComicDetail?.cover_data_url));
+const folderImgFailed = ref(false);
+const comicImgFailed = ref(false);
+
+watch(folderCoverSrc, () => {
+  folderImgFailed.value = false;
+});
+watch(comicCoverSrc, () => {
+  comicImgFailed.value = false;
+});
 
 watch(
   () => store.selectedComicDetail,
@@ -132,12 +145,13 @@ function formatDate(dateStr: string): string {
       <template v-if="store.selectedFolderDetail">
         <!-- Folder Cover or Icon Box -->
         <div
-          v-if="store.selectedFolderDetail.cover_data_url"
+          v-if="folderCoverSrc && !folderImgFailed"
           class="w-full aspect-[3/4] bg-neutral-950 rounded-xl overflow-hidden border border-neutral-800 relative shadow-inner"
         >
           <img
-            :src="store.selectedFolderDetail.cover_data_url"
+            :src="folderCoverSrc"
             :alt="store.selectedFolderDetail.name"
+            @error="folderImgFailed = true"
             class="w-full h-full object-contain"
           />
           <div
@@ -216,7 +230,7 @@ function formatDate(dateStr: string): string {
         </div>
 
         <!-- Title & Basic Info if has cover -->
-        <div v-if="store.selectedFolderDetail.cover_data_url" class="space-y-1">
+        <div v-if="folderCoverSrc && !folderImgFailed" class="space-y-1">
           <h2 class="text-sm font-bold text-white break-words leading-snug">
             {{ store.selectedFolderDetail.name }}
           </h2>
@@ -310,9 +324,10 @@ function formatDate(dateStr: string): string {
         <!-- Cover Preview -->
         <div class="w-full aspect-[3/4] bg-neutral-950 rounded-xl overflow-hidden border border-neutral-800 relative shadow-inner">
           <img
-            v-if="store.selectedComicDetail.cover_data_url"
-            :src="store.selectedComicDetail.cover_data_url"
+            v-if="comicCoverSrc && !comicImgFailed"
+            :src="comicCoverSrc"
             :alt="store.selectedComicDetail.name"
+            @error="comicImgFailed = true"
             class="w-full h-full object-contain"
           />
           <div v-else class="w-full h-full flex flex-col items-center justify-center text-neutral-600 gap-2">

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onUnmounted } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { useLibraryStore } from '../stores/libraryStore';
 import type { FolderItem } from '../types';
 import { Folder, Star, Sparkles } from 'lucide-vue-next';
+import { resolveCoverUrl } from '../utils/coverUrl';
 
 const props = defineProps<{
   folder: FolderItem;
@@ -11,6 +12,11 @@ const props = defineProps<{
 
 const store = useLibraryStore();
 const showNew = computed(() => !!store.settings.show_folder_new_badge && props.folder.is_new);
+const coverSrc = computed(() => resolveCoverUrl(props.folder.cover_data_url));
+const imgFailed = ref(false);
+watch(coverSrc, () => {
+  imgFailed.value = false;
+});
 
 const emit = defineEmits<{
   (e: 'select-folder', folderId: number): void;
@@ -60,9 +66,10 @@ onUnmounted(() => {
     <div class="relative w-full aspect-[3/4] bg-neutral-950 flex items-center justify-center overflow-hidden">
       <!-- Thumbnail Image -->
       <img
-        v-if="folder.cover_data_url"
-        :src="folder.cover_data_url"
+        v-if="coverSrc && !imgFailed"
+        :src="coverSrc"
         :alt="folder.name"
+        @error="imgFailed = true"
         class="w-full h-full object-cover group-hover:scale-105 transition duration-300"
         loading="lazy"
       />

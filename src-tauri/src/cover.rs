@@ -1,25 +1,37 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 use image::imageops::FilterType;
 use image::ImageFormat;
 use base64::prelude::*;
+use rayon::prelude::*;
 use crate::models::{ComicFileItem, FolderItem};
 
 pub struct CoverExtractor {
     cache_dir: PathBuf,
     existing_files: RwLock<HashSet<String>>,
-    data_url_cache: RwLock<HashMap<String, String>>,
+    existing_warmed: AtomicBool,
     empty_folder_cache: RwLock<HashSet<i64>>,
 }
 
 impl CoverExtractor {
     pub fn new(cache_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&cache_dir).ok();
+        Self {
+            cache_dir,
+            existing_files: RwLock::new(HashSet::new()),
+            existing_warmed: AtomicBool::new(false),
+            empty_folder_cache: RwLock::new(HashSet::new()),
+        }
+    }
+
+    /// Populates `existing_files` in the background so startup does not block on `read_dir`.
+    pub fn warm_existing_files(&self) {
         let mut existing = HashSet::new();
-        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+        if let Ok(entries) = std::fs::read_dir(&self.cache_dir) {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str() {
                     if name.ends_with(".webp") {
@@ -28,12 +40,26 @@ impl CoverExtractor {
                 }
             }
         }
-        Self {
-            cache_dir,
-            existing_files: RwLock::new(existing),
-            data_url_cache: RwLock::new(HashMap::new()),
-            empty_folder_cache: RwLock::new(HashSet::new()),
+        if let Ok(mut set) = self.existing_files.write() {
+            set.extend(existing);
         }
+        self.existing_warmed.store(true, Ordering::Release);
+    }
+
+    pub fn file_cover_uri(file_id: i64) -> String {
+        format!("ymppcover://file-{}.webp", file_id)
+    }
+
+    pub fn folder_cover_uri(folder_id: i64) -> String {
+        format!("ymppcover://folder-{}.webp", folder_id)
+    }
+
+    pub fn file_cover_uri_versioned(file_id: i64, version: u128) -> String {
+        format!("ymppcover://file-{}.webp?v={}", file_id, version)
+    }
+
+    pub fn folder_cover_uri_versioned(folder_id: i64, version: u128) -> String {
+        format!("ymppcover://folder-{}.webp?v={}", folder_id, version)
     }
 
     pub fn get_cache_path(&self, file_id: i64) -> PathBuf {
@@ -44,20 +70,46 @@ impl CoverExtractor {
         self.cache_dir.join(format!("folder_{}.webp", folder_id))
     }
 
+    fn has_cache_key(&self, key: &str) -> bool {
+        if let Ok(set) = self.existing_files.read() {
+            if set.contains(key) {
+                return true;
+            }
+        }
+        if self.existing_warmed.load(Ordering::Acquire) {
+            return false;
+        }
+        if self.cache_dir.join(key).exists() {
+            if let Ok(mut set) = self.existing_files.write() {
+                set.insert(key.to_string());
+            }
+            return true;
+        }
+        false
+    }
+
     pub fn has_file_cover(&self, file_id: i64) -> bool {
-        let key = format!("{}.webp", file_id);
-        self.existing_files
-            .read()
-            .map(|set| set.contains(&key))
-            .unwrap_or(false)
+        self.has_cache_key(&format!("{}.webp", file_id))
     }
 
     pub fn has_folder_cover(&self, folder_id: i64) -> bool {
-        let key = format!("folder_{}.webp", folder_id);
-        self.existing_files
-            .read()
-            .map(|set| set.contains(&key))
-            .unwrap_or(false)
+        self.has_cache_key(&format!("folder_{}.webp", folder_id))
+    }
+
+    pub fn get_file_cover_uri_if_exists(&self, file_id: i64) -> Option<String> {
+        if self.has_file_cover(file_id) {
+            Some(Self::file_cover_uri(file_id))
+        } else {
+            None
+        }
+    }
+
+    pub fn get_folder_cover_uri_if_exists(&self, folder_id: i64) -> Option<String> {
+        if self.has_folder_cover(folder_id) {
+            Some(Self::folder_cover_uri(folder_id))
+        } else {
+            None
+        }
     }
 
     pub fn is_known_empty_folder(&self, folder_id: i64) -> bool {
@@ -78,10 +130,6 @@ impl CoverExtractor {
         if let Ok(mut ex) = self.existing_files.write() {
             ex.remove(&key);
         }
-        let url_key = format!("file_{}", file_id);
-        if let Ok(mut cache) = self.data_url_cache.write() {
-            cache.remove(&url_key);
-        }
         let path = self.get_cache_path(file_id);
         let _ = std::fs::remove_file(path);
     }
@@ -90,10 +138,6 @@ impl CoverExtractor {
         let key = format!("folder_{}.webp", folder_id);
         if let Ok(mut ex) = self.existing_files.write() {
             ex.remove(&key);
-        }
-        let url_key = format!("folder_{}", folder_id);
-        if let Ok(mut cache) = self.data_url_cache.write() {
-            cache.remove(&url_key);
         }
         if let Ok(mut empty) = self.empty_folder_cache.write() {
             empty.remove(&folder_id);
@@ -106,150 +150,122 @@ impl CoverExtractor {
         if let Ok(mut set) = self.existing_files.write() {
             set.clear();
         }
-        if let Ok(mut map) = self.data_url_cache.write() {
-            map.clear();
-        }
         if let Ok(mut empty) = self.empty_folder_cache.write() {
             empty.clear();
         }
-    }
-
-    fn get_cached_by_key(&self, key: &str) -> Option<String> {
-        if let Ok(cache) = self.data_url_cache.read() {
-            if let Some(url) = cache.get(key) {
-                return Some(url.clone());
-            }
-        }
-
-        let exists = self
-            .existing_files
-            .read()
-            .map(|set| set.contains(key))
-            .unwrap_or(false);
-        if !exists {
-            return None;
-        }
-
-        let path = self.cache_dir.join(key);
-        let bytes = std::fs::read(&path).ok()?;
-        let b64 = BASE64_STANDARD.encode(&bytes);
-        let url = format!("data:image/webp;base64,{}", b64);
-
-        if let Ok(mut cache) = self.data_url_cache.write() {
-            cache.insert(key.to_string(), url.clone());
-        }
-        Some(url)
+        self.existing_warmed.store(true, Ordering::Release);
     }
 
     pub fn get_cached_file_cover(&self, file_id: i64) -> Option<String> {
-        let key = format!("{}.webp", file_id);
-        self.get_cached_by_key(&key)
+        if !self.has_file_cover(file_id) {
+            return None;
+        }
+        Self::read_as_data_url(&self.get_cache_path(file_id))
     }
 
-    pub fn get_cached_folder_cover(&self, folder_id: i64) -> Option<String> {
-        let key = format!("folder_{}.webp", folder_id);
-        self.get_cached_by_key(&key)
+    /// Reads raw WebP bytes for the custom `ymppcover` URI protocol (`file-<id>.webp` or `folder-<id>.webp`).
+    pub fn read_cover_bytes_by_uri_name(&self, uri_name: &str) -> Option<Vec<u8>> {
+        let disk_key = if let Some(rest) = uri_name.strip_prefix("file-") {
+            let id_str = rest.strip_suffix(".webp")?;
+            if id_str.is_empty() || !id_str.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            format!("{}.webp", id_str)
+        } else if let Some(rest) = uri_name.strip_prefix("folder-") {
+            let id_str = rest.strip_suffix(".webp")?;
+            if id_str.is_empty() || !id_str.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            format!("folder_{}.webp", id_str)
+        } else {
+            return None;
+        };
+
+        let path = self.cache_dir.join(&disk_key);
+        std::fs::read(&path).ok()
     }
 
-    pub fn populate_file_covers_parallel(&self, files: &mut [ComicFileItem]) {
-        let mut to_load: Vec<(usize, String)> = Vec::new();
-        {
-            let cache = self.data_url_cache.read().ok();
-            let existing = self.existing_files.read().ok();
+    /// Populates lightweight `ymppcover://` URIs for comic files without reading `.webp` files or Base64 encoding.
+    pub fn populate_file_covers_uris(&self, files: &mut [ComicFileItem]) {
+        let warmed = self.existing_warmed.load(Ordering::Acquire);
+        let existing_guard = if warmed { self.existing_files.read().ok() } else { None };
 
-            for (idx, file) in files.iter_mut().enumerate() {
+        for file in files.iter_mut() {
+            if file.cover_cache_path.is_some() {
+                file.cover_data_url = Some(Self::file_cover_uri(file.id));
+                continue;
+            }
+            if let Some(ref set) = existing_guard {
                 let key = format!("{}.webp", file.id);
-                if let Some(ref c) = cache {
-                    if let Some(url) = c.get(&key) {
-                        file.cover_data_url = Some(url.clone());
-                        continue;
-                    }
+                if set.contains(&key) {
+                    file.cover_data_url = Some(Self::file_cover_uri(file.id));
                 }
-                if let Some(ref ex) = existing {
-                    if ex.contains(&key) {
-                        to_load.push((idx, key));
-                    }
-                }
-            }
-        }
-
-        if to_load.is_empty() {
-            return;
-        }
-
-        let loaded = self.read_keys_parallel(&to_load);
-        if let Ok(mut cache) = self.data_url_cache.write() {
-            for (idx, key, url) in loaded {
-                cache.insert(key, url.clone());
-                files[idx].cover_data_url = Some(url);
             }
         }
     }
 
-    pub fn populate_folder_covers_parallel(&self, folders: &mut [FolderItem]) {
-        let mut to_load: Vec<(usize, String)> = Vec::new();
-        {
-            let cache = self.data_url_cache.read().ok();
-            let existing = self.existing_files.read().ok();
+    /// Populates lightweight `ymppcover://` URIs for folders and returns any `"unknown"` folder IDs
+    /// whose cached `.webp` was confirmed to exist on disk so callers can persist `cover_status = 'ready'`.
+    pub fn populate_folder_covers_uris(&self, folders: &mut [FolderItem]) -> Vec<i64> {
+        let mut unknown_indices: Vec<usize> = Vec::new();
 
-            for (idx, folder) in folders.iter_mut().enumerate() {
-                let key = format!("folder_{}.webp", folder.id);
-                if let Some(ref c) = cache {
-                    if let Some(url) = c.get(&key) {
-                        folder.cover_data_url = Some(url.clone());
-                        continue;
-                    }
+        for (idx, folder) in folders.iter_mut().enumerate() {
+            match folder.cover_status.as_str() {
+                "ready" => {
+                    folder.cover_data_url = Some(Self::folder_cover_uri(folder.id));
                 }
-                if let Some(ref ex) = existing {
-                    if ex.contains(&key) {
-                        to_load.push((idx, key));
-                    }
+                "empty" => {
+                    folder.cover_data_url = None;
+                }
+                _ => {
+                    unknown_indices.push(idx);
                 }
             }
         }
 
-        if to_load.is_empty() {
-            return;
+        if unknown_indices.is_empty() {
+            return Vec::new();
         }
 
-        let loaded = self.read_keys_parallel(&to_load);
-        if let Ok(mut cache) = self.data_url_cache.write() {
-            for (idx, key, url) in loaded {
-                cache.insert(key, url.clone());
-                folders[idx].cover_data_url = Some(url);
-            }
-        }
-    }
+        let mut newly_ready_ids: Vec<i64> = Vec::new();
 
-    fn read_keys_parallel(&self, items: &[(usize, String)]) -> Vec<(usize, String, String)> {
-        let num_threads = 8.min(items.len()).max(1);
-        let chunk_size = (items.len() + num_threads - 1) / num_threads;
-        let cache_dir = &self.cache_dir;
-
-        std::thread::scope(|s| {
-            let mut handles = Vec::new();
-            for chunk in items.chunks(chunk_size) {
-                handles.push(s.spawn(move || {
-                    let mut out = Vec::with_capacity(chunk.len());
-                    for (idx, key) in chunk {
-                        let path = cache_dir.join(key);
-                        if let Ok(bytes) = std::fs::read(&path) {
-                            let b64 = BASE64_STANDARD.encode(&bytes);
-                            let url = format!("data:image/webp;base64,{}", b64);
-                            out.push((*idx, key.clone(), url));
-                        }
+        if self.existing_warmed.load(Ordering::Acquire) {
+            if let Ok(set) = self.existing_files.read() {
+                for idx in unknown_indices {
+                    let fid = folders[idx].id;
+                    if set.contains(&format!("folder_{}.webp", fid)) {
+                        folders[idx].cover_status = "ready".to_string();
+                        folders[idx].cover_data_url = Some(Self::folder_cover_uri(fid));
+                        newly_ready_ids.push(fid);
                     }
-                    out
-                }));
-            }
-            let mut results = Vec::with_capacity(items.len());
-            for h in handles {
-                if let Ok(mut part) = h.join() {
-                    results.append(&mut part);
                 }
             }
-            results
-        })
+            return newly_ready_ids;
+        }
+
+        // Before background cache warming completes, check only the unknown folders in the current view in parallel
+        let found_indices: Vec<usize> = unknown_indices
+            .par_iter()
+            .copied()
+            .filter(|&idx| self.get_folder_cache_path(folders[idx].id).exists())
+            .collect();
+
+        if !found_indices.is_empty() {
+            if let Ok(mut set) = self.existing_files.write() {
+                for idx in &found_indices {
+                    let fid = folders[*idx].id;
+                    set.insert(format!("folder_{}.webp", fid));
+                }
+            }
+            for idx in found_indices {
+                let fid = folders[idx].id;
+                folders[idx].cover_status = "ready".to_string();
+                folders[idx].cover_data_url = Some(Self::folder_cover_uri(fid));
+                newly_ready_ids.push(fid);
+            }
+        }
+
+        newly_ready_ids
     }
 
     pub fn extract_and_cache(
@@ -260,10 +276,7 @@ impl CoverExtractor {
     ) -> Result<PathBuf, String> {
         let key = format!("{}.webp", file_id);
         let out_path = self.cache_dir.join(&key);
-        if self.has_file_cover(file_id) || out_path.exists() {
-            if let Ok(mut ex) = self.existing_files.write() {
-                ex.insert(key);
-            }
+        if self.has_file_cover(file_id) {
             return Ok(out_path);
         }
 
@@ -311,10 +324,7 @@ impl CoverExtractor {
     ) -> Result<PathBuf, String> {
         let key = format!("folder_{}.webp", folder_id);
         let out_path = self.cache_dir.join(&key);
-        if self.has_folder_cover(folder_id) || out_path.exists() {
-            if let Ok(mut ex) = self.existing_files.write() {
-                ex.insert(key);
-            }
+        if self.has_folder_cover(folder_id) {
             return Ok(out_path);
         }
 
@@ -330,19 +340,19 @@ impl CoverExtractor {
 
     /// Copies an existing comic cover to act as the folder cover.
     pub fn copy_comic_cover_to_folder(&self, comic_file_id: i64, folder_id: i64) -> Option<String> {
-        let folder_key = format!("folder_{}.webp", folder_id);
-        if let Some(url) = self.get_cached_by_key(&folder_key) {
-            return Some(url);
+        if self.has_folder_cover(folder_id) {
+            return Some(Self::folder_cover_uri(folder_id));
         }
 
         let comic_path = self.get_cache_path(comic_file_id);
         let folder_path = self.get_folder_cache_path(folder_id);
         if comic_path.exists() {
             if std::fs::copy(&comic_path, &folder_path).is_ok() {
+                let folder_key = format!("folder_{}.webp", folder_id);
                 if let Ok(mut ex) = self.existing_files.write() {
-                    ex.insert(folder_key.clone());
+                    ex.insert(folder_key);
                 }
-                return self.get_cached_by_key(&folder_key);
+                return Some(Self::folder_cover_uri(folder_id));
             }
         }
         None
@@ -372,14 +382,8 @@ impl CoverExtractor {
         std::fs::write(out_path, &raw_webp)
             .map_err(|e| format!("Failed to write cache file: {}", e))?;
 
-        let b64 = BASE64_STANDARD.encode(&raw_webp);
-        let url = format!("data:image/webp;base64,{}", b64);
-
         if let Ok(mut ex) = self.existing_files.write() {
             ex.insert(key.to_string());
-        }
-        if let Ok(mut cache) = self.data_url_cache.write() {
-            cache.insert(key.to_string(), url);
         }
         Ok(())
     }
@@ -559,5 +563,93 @@ mod tests {
         // Natural sort first must be p1.jpg (index 2)
         let best_nat = CoverExtractor::find_cover_index(&entries_no_kw);
         assert_eq!(best_nat, 2);
+    }
+
+    #[test]
+    fn test_read_cover_bytes_by_uri_name_validation() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "test_cover_uri_{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("12.webp"), b"webp-file-12").unwrap();
+        std::fs::write(temp_dir.join("folder_34.webp"), b"webp-folder-34").unwrap();
+
+        let extractor = CoverExtractor::new(temp_dir.clone());
+        assert_eq!(extractor.read_cover_bytes_by_uri_name("file-12.webp"), Some(b"webp-file-12".to_vec()));
+        assert_eq!(extractor.read_cover_bytes_by_uri_name("folder-34.webp"), Some(b"webp-folder-34".to_vec()));
+        assert_eq!(extractor.read_cover_bytes_by_uri_name("../12.webp"), None);
+        assert_eq!(extractor.read_cover_bytes_by_uri_name("file-abc.webp"), None);
+        assert_eq!(extractor.read_cover_bytes_by_uri_name("file-.webp"), None);
+        assert_eq!(extractor.read_cover_bytes_by_uri_name("other.webp"), None);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_populate_folder_covers_uris_and_warm() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "test_cover_warm_{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("folder_10.webp"), b"f10").unwrap();
+        std::fs::write(temp_dir.join("folder_11.webp"), b"f11").unwrap();
+
+        let extractor = CoverExtractor::new(temp_dir.clone());
+        let mut folders = vec![
+            FolderItem {
+                id: 10,
+                library_id: 1,
+                relative_path: "a".to_string(),
+                name: "a".to_string(),
+                parent_id: Some(1),
+                rating: 0,
+                is_new: false,
+                cover_status: "ready".to_string(),
+                cover_data_url: None,
+                direct_tags: Vec::new(),
+            },
+            FolderItem {
+                id: 11,
+                library_id: 1,
+                relative_path: "b".to_string(),
+                name: "b".to_string(),
+                parent_id: Some(1),
+                rating: 0,
+                is_new: false,
+                cover_status: "unknown".to_string(),
+                cover_data_url: None,
+                direct_tags: Vec::new(),
+            },
+            FolderItem {
+                id: 12,
+                library_id: 1,
+                relative_path: "c".to_string(),
+                name: "c".to_string(),
+                parent_id: Some(1),
+                rating: 0,
+                is_new: false,
+                cover_status: "empty".to_string(),
+                cover_data_url: None,
+                direct_tags: Vec::new(),
+            },
+        ];
+
+        // Before warming, unknown folder 11 should be discovered on disk
+        let newly_ready = extractor.populate_folder_covers_uris(&mut folders);
+        assert_eq!(newly_ready, vec![11]);
+        assert_eq!(folders[0].cover_data_url.as_deref(), Some("ymppcover://folder-10.webp"));
+        assert_eq!(folders[1].cover_data_url.as_deref(), Some("ymppcover://folder-11.webp"));
+        assert_eq!(folders[1].cover_status, "ready");
+        assert_eq!(folders[2].cover_data_url, None);
+
+        // Warm in background and verify O(1) lookup
+        extractor.warm_existing_files();
+        assert!(extractor.has_folder_cover(10));
+        assert!(extractor.has_folder_cover(11));
+        assert!(!extractor.has_folder_cover(12));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

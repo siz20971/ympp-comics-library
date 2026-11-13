@@ -6,8 +6,10 @@ pub mod models;
 pub mod path_utils;
 pub mod scanner;
 
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use commands::AppState;
+use tauri::Manager;
 use tokio::sync::RwLock;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -19,12 +21,49 @@ pub fn run() {
         app_dir,
         settings_path,
         active_context: Arc::new(RwLock::new(None)),
+        nav_generation: Arc::new(AtomicU64::new(0)),
     };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
+        .register_asynchronous_uri_scheme_protocol("ymppcover", |ctx, request, responder| {
+            let app_handle = ctx.app_handle().clone();
+            let uri_path = request.uri().path().trim_start_matches('/').to_string();
+
+            tauri::async_runtime::spawn(async move {
+                let state = app_handle.state::<AppState>();
+                let lib_ctx = state.active_context.read().await.clone();
+
+                let bytes_opt = if let Some(c) = lib_ctx {
+                    tokio::task::spawn_blocking(move || {
+                        c.cover_extractor.read_cover_bytes_by_uri_name(&uri_path)
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                } else {
+                    None
+                };
+
+                let response = match bytes_opt {
+                    Some(bytes) => tauri::http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", "image/webp")
+                        .header("Cache-Control", "public, max-age=86400")
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(bytes)
+                        .unwrap(),
+                    None => tauri::http::Response::builder()
+                        .status(404)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(Vec::new())
+                        .unwrap(),
+                };
+                responder.respond(response);
+            });
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_initial_state,
             commands::set_library_path,

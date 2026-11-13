@@ -19,8 +19,14 @@ pub struct FolderItem {
     pub parent_id: Option<i64>,
     pub rating: i32,
     pub is_new: bool,
+    #[serde(default = "default_cover_status")]
+    pub cover_status: String,
     pub cover_data_url: Option<String>,
     pub direct_tags: Vec<TagItem>,
+}
+
+fn default_cover_status() -> String {
+    "unknown".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

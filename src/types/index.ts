@@ -31,6 +31,7 @@ export interface FolderItem {
   parent_id: number | null;
   rating: number;
   is_new: boolean;
+  cover_status?: string;
   cover_data_url: string | null;
   direct_tags: TagItem[];
 }

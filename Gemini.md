@@ -132,7 +132,12 @@ cmd /c build_release.bat
 ### 2) 작업 시마다 `CHANGES.md` 작성 필수
 * 작업이 진행될 때마다 로컬의 [`CHANGES.md`](file:///d:/Repository/UhHeuLibrary/CHANGES.md) 파일의 `[Unreleased]` 섹션에 변경 내용(백엔드, 프론트엔드, 스키마, UI 등)을 구체적으로 누적 기록해야 합니다.
 
-### 3) 커밋 요청 시 버전 업 및 종합 커밋 절차
+### 3) 수정 후 릴리즈 빌드 및 `.exe` 갱신 필수 (Mandatory EXE Rebuild)
+* **이 프로젝트의 소스 코드나 리소스 수정이 진행되면 작업 마무리 시 항상 프로덕션 릴리즈 빌드를 실행하여 [`release/YMPPComicsLibrary.exe`](file:///d:/Repository/UhHeuLibrary/release/YMPPComicsLibrary.exe) 파일을 최신 상태로 갱신해야 합니다.**
+* 실행 명령: `cmd /c build_release.bat` (`npm run build` + `npx tauri build --no-bundle` + `release\YMPPComicsLibrary.exe` 복사 및 실행 중 교체 처리 포함)
+* 단위 테스트(`cargo test --manifest-path src-tauri/Cargo.toml`) 통과와 함께 릴리즈 `.exe` 갱신 완료 여부를 반드시 검증하십시오.
+
+### 4) 커밋 요청 시 버전 업 및 종합 커밋 절차
 * 사용자가 커밋을 명시적으로 요청하면 다음 단계를 순서대로 수행합니다:
   1. **마이너 버전 1단계 증가**:
      - `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, `src/components/SettingsModal.vue`의 버전을 올립니다.
@@ -142,7 +147,7 @@ cmd /c build_release.bat
   3. **종합 커밋 작성**:
      - `CHANGES.md`에 누적된 변경점들을 종합하여 한글 커밋 메시지를 작성하고 커밋합니다.
 
-### 4) 커밋 메시지 작성 규칙
+### 5) 커밋 메시지 작성 규칙
 모든 커밋은 변경 사항을 명확히 추적할 수 있도록 다음 규칙을 준수해야 합니다:
 1. **언어 원칙**: 커밋 메시지의 제목과 본문은 **반드시 한글(한국어)**로 작성합니다.
 2. **제목 포맷**: 접두사(Conventional Commits)와 함께 핵심 변경 사항을 간결하게 작성합니다.

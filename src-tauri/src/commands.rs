@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::RwLock;
@@ -26,6 +27,7 @@ pub struct AppState {
     pub app_dir: PathBuf,
     pub settings_path: PathBuf,
     pub active_context: Arc<RwLock<Option<LibraryContext>>>,
+    pub nav_generation: Arc<AtomicU64>,
 }
 
 impl AppState {
@@ -38,40 +40,54 @@ impl AppState {
     }
 
     pub async fn switch_library(&self, portable_or_abs_path: &str) -> Result<LibraryContext, String> {
+        self.nav_generation.fetch_add(1, Ordering::AcqRel);
         let abs_lib_root = path_utils::resolve_to_absolute(portable_or_abs_path, &self.app_dir);
-        if !abs_lib_root.exists() || !abs_lib_root.is_dir() {
-            return Err(format!(
-                "라이브러리 디렉터리를 찾을 수 없습니다: {}",
-                abs_lib_root.display()
-            ));
-        }
 
-        // Library folder uses .ymppCache for portable db and covers
-        let legacy_cache_dir = abs_lib_root.join(".uhheuCache");
-        let cache_dir = abs_lib_root.join(".ymppCache");
-        if !cache_dir.exists() && legacy_cache_dir.exists() {
-            let _ = std::fs::rename(&legacy_cache_dir, &cache_dir);
-        }
-        let covers_dir = cache_dir.join("covers");
-        let db_path = cache_dir.join("comics_library.db");
+        let ctx = tokio::task::spawn_blocking(move || -> Result<LibraryContext, String> {
+            if !abs_lib_root.exists() || !abs_lib_root.is_dir() {
+                return Err(format!(
+                    "라이브러리 디렉터리를 찾을 수 없습니다: {}",
+                    abs_lib_root.display()
+                ));
+            }
 
-        std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-        std::fs::create_dir_all(&covers_dir).map_err(|e| e.to_string())?;
+            // Library folder uses .ymppCache for portable db and covers
+            let legacy_cache_dir = abs_lib_root.join(".uhheuCache");
+            let cache_dir = abs_lib_root.join(".ymppCache");
+            if !cache_dir.exists() && legacy_cache_dir.exists() {
+                let _ = std::fs::rename(&legacy_cache_dir, &cache_dir);
+            }
+            let covers_dir = cache_dir.join("covers");
+            let db_path = cache_dir.join("comics_library.db");
 
-        let db = Arc::new(Database::new(db_path).map_err(|e| e.to_string())?);
-        let cover_extractor = Arc::new(CoverExtractor::new(covers_dir));
-        let scanner = Arc::new(Scanner::new(db.clone(), cover_extractor.clone()));
+            std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(&covers_dir).map_err(|e| e.to_string())?;
 
-        let ctx = LibraryContext {
-            lib_root: abs_lib_root,
-            cache_dir,
-            db,
-            cover_extractor,
-            scanner,
-        };
+            let db = Arc::new(Database::new(db_path).map_err(|e| e.to_string())?);
+            let cover_extractor = Arc::new(CoverExtractor::new(covers_dir));
+            let scanner = Arc::new(Scanner::new(db.clone(), cover_extractor.clone()));
+
+            Ok(LibraryContext {
+                lib_root: abs_lib_root,
+                cache_dir,
+                db,
+                cover_extractor,
+                scanner,
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())??;
 
         let mut guard = self.active_context.write().await;
         *guard = Some(ctx.clone());
+        drop(guard);
+
+        // Warm cover cache index asynchronously in the background without blocking startup
+        let cover_bg = ctx.cover_extractor.clone();
+        tokio::task::spawn_blocking(move || {
+            cover_bg.warm_existing_files();
+        });
+
         Ok(ctx)
     }
 
@@ -177,89 +193,55 @@ pub async fn get_folder_content(
     state: State<'_, AppState>,
 ) -> Result<FolderContent, String> {
     let ctx = state.get_context().await?;
+    state.nav_generation.fetch_add(1, Ordering::AcqRel);
 
-    let lib = ctx
-        .db
-        .get_latest_library()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "라이브러리가 설정되지 않았습니다.".to_string())?;
-
-    let effective_folder_id = match folder_id {
-        Some(id) if id > 0 => id,
-        _ => ctx
+    tokio::task::spawn_blocking(move || {
+        let mut content = ctx
             .db
-            .get_root_folder_id(lib.id)
+            .get_folder_content_bundle(folder_id)
             .map_err(|e| e.to_string())?
-            .unwrap_or(0),
-    };
+            .ok_or_else(|| "라이브러리가 설정되지 않았습니다.".to_string())?;
 
-    let mut current_folder = if effective_folder_id > 0 {
-        ctx.db.get_folder_by_id(effective_folder_id).map_err(|e| e.to_string())?
-    } else {
-        None
-    };
-
-    if let Some(ref mut cf) = current_folder {
-        cf.cover_data_url = ctx.cover_extractor.get_cached_folder_cover(cf.id);
-    }
-
-    let parent_folder = if let Some(ref cf) = current_folder {
-        if let Some(pid) = cf.parent_id {
-            ctx.db.get_folder_by_id(pid).map_err(|e| e.to_string())?
-        } else {
-            None
+        if let Some(ref mut cf) = content.current_folder {
+            if cf.cover_status == "ready" || ctx.cover_extractor.has_folder_cover(cf.id) {
+                cf.cover_data_url = Some(CoverExtractor::folder_cover_uri(cf.id));
+            }
         }
-    } else {
-        None
-    };
 
-    let mut subfolders = if effective_folder_id > 0 {
-        ctx.db.get_subfolders(lib.id, Some(effective_folder_id)).map_err(|e| e.to_string())?
-    } else {
-        ctx.db.get_subfolders(lib.id, None).map_err(|e| e.to_string())?
-    };
+        let newly_ready_ids = ctx.cover_extractor.populate_folder_covers_uris(&mut content.subfolders);
+        if !newly_ready_ids.is_empty() {
+            let _ = ctx.db.batch_mark_folders_cover_ready(&newly_ready_ids);
+        }
 
-    let mut files = if effective_folder_id > 0 {
-        ctx.db.get_folder_files(effective_folder_id).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
+        ctx.cover_extractor.populate_file_covers_uris(&mut content.files);
 
-    ctx.cover_extractor.populate_folder_covers_parallel(&mut subfolders);
-    ctx.cover_extractor.populate_file_covers_parallel(&mut files);
-
-    let breadcrumbs = ctx
-        .db
-        .get_breadcrumbs(lib.id, current_folder.as_ref())
-        .map_err(|e| e.to_string())?;
-
-    Ok(FolderContent {
-        current_folder,
-        parent_folder,
-        subfolders,
-        files,
-        breadcrumbs,
+        Ok(content)
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn resolve_single_folder_cover(ctx: &LibraryContext, folder_id: i64) -> Option<String> {
-    if let Some(url) = ctx.cover_extractor.get_cached_folder_cover(folder_id) {
+    if let Some(url) = ctx.cover_extractor.get_folder_cover_uri_if_exists(folder_id) {
+        let _ = ctx.db.update_folder_cover_status(folder_id, "ready");
         return Some(url);
     }
     if ctx.cover_extractor.is_known_empty_folder(folder_id) {
         return None;
     }
 
-    let (rel_opt, first_comic_id, child_rels) = ctx.db.get_folder_cover_candidates(folder_id).ok()?;
+    let (rel_opt, first_comic_id, _) = ctx.db.get_folder_cover_candidates(folder_id).ok()?;
     let rel_path = rel_opt?;
     if rel_path.is_empty() {
         ctx.cover_extractor.mark_empty_folder(folder_id);
+        let _ = ctx.db.update_folder_cover_status(folder_id, "empty");
         return None;
     }
 
     // 1. If there is a comic file inside this folder (or its descendants) with a ready cover, reuse it quickly
     if let Some(cid) = first_comic_id {
         if let Some(url) = ctx.cover_extractor.copy_comic_cover_to_folder(cid, folder_id) {
+            let _ = ctx.db.update_folder_cover_status(folder_id, "ready");
             return Some(url);
         }
     }
@@ -271,22 +253,12 @@ fn resolve_single_folder_cover(ctx: &LibraryContext, folder_id: i64) -> Option<S
         .extract_folder_cover_from_dir(folder_id, &full_folder_path, 480)
         .is_ok()
     {
-        return ctx.cover_extractor.get_cached_folder_cover(folder_id);
-    }
-
-    // 3. Fallback: check tracked child folders from DB
-    for child_rel in child_rels {
-        let child_full = ctx.lib_root.join(&child_rel);
-        if ctx
-            .cover_extractor
-            .extract_folder_cover_from_dir(folder_id, &child_full, 480)
-            .is_ok()
-        {
-            return ctx.cover_extractor.get_cached_folder_cover(folder_id);
-        }
+        let _ = ctx.db.update_folder_cover_status(folder_id, "ready");
+        return Some(CoverExtractor::folder_cover_uri(folder_id));
     }
 
     ctx.cover_extractor.mark_empty_folder(folder_id);
+    let _ = ctx.db.update_folder_cover_status(folder_id, "empty");
     None
 }
 
@@ -296,9 +268,16 @@ pub async fn resolve_folder_covers(
     state: State<'_, AppState>,
 ) -> Result<Vec<(i64, String)>, String> {
     let ctx = state.get_context().await?;
+    let nav_gen = state.nav_generation.clone();
+    let expected_gen = nav_gen.load(Ordering::Acquire);
+
     tokio::task::spawn_blocking(move || {
         let mut resolved = Vec::new();
         for fid in folder_ids {
+            // Abort remaining work immediately if the user navigated to another folder
+            if nav_gen.load(Ordering::Acquire) != expected_gen {
+                break;
+            }
             if let Some(url) = resolve_single_folder_cover(&ctx, fid) {
                 resolved.push((fid, url));
             }
@@ -316,6 +295,11 @@ pub async fn refresh_item(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     let ctx = state.get_context().await?;
+    let version = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
     tokio::task::spawn_blocking(move || {
         match item_type.as_str() {
             "comic" => {
@@ -334,12 +318,20 @@ pub async fn refresh_item(
                         );
                     }
                 }
-                Ok(ctx.cover_extractor.get_cached_file_cover(id))
+                if ctx.cover_extractor.has_file_cover(id) {
+                    Ok(Some(CoverExtractor::file_cover_uri_versioned(id, version)))
+                } else {
+                    Ok(None)
+                }
             }
             "folder" => {
                 ctx.cover_extractor.invalidate_folder_cover(id);
-                let new_cover = resolve_single_folder_cover(&ctx, id);
-                Ok(new_cover)
+                let _ = ctx.db.update_folder_cover_status(id, "unknown");
+                if resolve_single_folder_cover(&ctx, id).is_some() {
+                    Ok(Some(CoverExtractor::folder_cover_uri_versioned(id, version)))
+                } else {
+                    Ok(None)
+                }
             }
             _ => Err("Invalid item type".to_string()),
         }
@@ -354,16 +346,20 @@ pub async fn search_comics(
     state: State<'_, AppState>,
 ) -> Result<Vec<ComicFileItem>, String> {
     let ctx = state.get_context().await?;
-    let lib = ctx
-        .db
-        .get_latest_library()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "라이브러리가 설정되지 않았습니다.".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let lib = ctx
+            .db
+            .get_latest_library()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "라이브러리가 설정되지 않았습니다.".to_string())?;
 
-    let mut results = ctx.db.search_comics(lib.id, &query).map_err(|e| e.to_string())?;
-    ctx.cover_extractor.populate_file_covers_parallel(&mut results);
+        let mut results = ctx.db.search_comics(lib.id, &query).map_err(|e| e.to_string())?;
+        ctx.cover_extractor.populate_file_covers_uris(&mut results);
 
-    Ok(results)
+        Ok(results)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -372,16 +368,23 @@ pub async fn search_folders(
     state: State<'_, AppState>,
 ) -> Result<Vec<FolderItem>, String> {
     let ctx = state.get_context().await?;
-    let lib = ctx
-        .db
-        .get_latest_library()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "라이브러리가 설정되지 않았습니다.".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let lib = ctx
+            .db
+            .get_latest_library()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "라이브러리가 설정되지 않았습니다.".to_string())?;
 
-    let mut results = ctx.db.search_folders(lib.id, &query).map_err(|e| e.to_string())?;
-    ctx.cover_extractor.populate_folder_covers_parallel(&mut results);
+        let mut results = ctx.db.search_folders(lib.id, &query).map_err(|e| e.to_string())?;
+        let newly_ready = ctx.cover_extractor.populate_folder_covers_uris(&mut results);
+        if !newly_ready.is_empty() {
+            let _ = ctx.db.batch_mark_folders_cover_ready(&newly_ready);
+        }
 
-    Ok(results)
+        Ok(results)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -390,15 +393,18 @@ pub async fn get_comic_detail(
     state: State<'_, AppState>,
 ) -> Result<Option<ComicDetail>, String> {
     let ctx = state.get_context().await?;
-    let lib_root_str = ctx.lib_root.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        let lib_root_str = ctx.lib_root.to_string_lossy().to_string();
+        let mut detail = ctx.db.get_comic_detail(file_id, &lib_root_str).map_err(|e| e.to_string())?;
 
-    let mut detail = ctx.db.get_comic_detail(file_id, &lib_root_str).map_err(|e| e.to_string())?;
+        if let Some(ref mut d) = detail {
+            d.cover_data_url = ctx.cover_extractor.get_file_cover_uri_if_exists(file_id);
+        }
 
-    if let Some(ref mut d) = detail {
-        d.cover_data_url = ctx.cover_extractor.get_cached_file_cover(file_id);
-    }
-
-    Ok(detail)
+        Ok(detail)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -407,12 +413,16 @@ pub async fn get_folder_detail(
     state: State<'_, AppState>,
 ) -> Result<Option<FolderDetail>, String> {
     let ctx = state.get_context().await?;
-    let lib_root_str = ctx.lib_root.to_string_lossy().to_string();
-    let mut detail = ctx.db.get_folder_detail(folder_id, &lib_root_str).map_err(|e| e.to_string())?;
-    if let Some(ref mut d) = detail {
-        d.cover_data_url = resolve_single_folder_cover(&ctx, folder_id);
-    }
-    Ok(detail)
+    tokio::task::spawn_blocking(move || {
+        let lib_root_str = ctx.lib_root.to_string_lossy().to_string();
+        let mut detail = ctx.db.get_folder_detail(folder_id, &lib_root_str).map_err(|e| e.to_string())?;
+        if let Some(ref mut d) = detail {
+            d.cover_data_url = resolve_single_folder_cover(&ctx, folder_id);
+        }
+        Ok(detail)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

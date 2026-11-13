@@ -1,12 +1,19 @@
 <script setup lang="ts">
-import { onUnmounted } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import type { ComicFileItem } from '../types';
 import { BookOpen, Star, Sparkles } from 'lucide-vue-next';
+import { resolveCoverUrl } from '../utils/coverUrl';
 
 const props = defineProps<{
   comic: ComicFileItem;
   isSelected: boolean;
 }>();
+
+const coverSrc = computed(() => resolveCoverUrl(props.comic.cover_data_url));
+const imgFailed = ref(false);
+watch(coverSrc, () => {
+  imgFailed.value = false;
+});
 
 const emit = defineEmits<{
   (e: 'select', fileId: number): void;
@@ -63,9 +70,10 @@ function formatSize(bytes: number): string {
     <div class="relative w-full aspect-[3/4] bg-neutral-950 flex items-center justify-center overflow-hidden">
       <!-- Thumbnail Image -->
       <img
-        v-if="comic.cover_data_url"
-        :src="comic.cover_data_url"
+        v-if="coverSrc && !imgFailed"
+        :src="coverSrc"
         :alt="comic.name"
+        @error="imgFailed = true"
         class="w-full h-full object-cover group-hover:scale-105 transition duration-300"
         loading="lazy"
       />

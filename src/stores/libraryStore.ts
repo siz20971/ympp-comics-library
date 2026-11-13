@@ -119,9 +119,8 @@ export const useLibraryStore = defineStore('library', () => {
       }
       if (state.library) {
         library.value = state.library;
-        await loadFolder(null);
+        await Promise.all([loadFolder(null), loadTags()]);
       }
-      await loadTags();
     } catch (err) {
       console.error('Failed to init app state:', err);
     }
@@ -166,7 +165,7 @@ export const useLibraryStore = defineStore('library', () => {
   ) {
     // 이미 해당 폴더가 로드되어 화면에 표시 중인지 판별 (초기 로드 상태가 아닐 때만 유효)
     const isAlreadyLoaded = mode.value === 'browse' && (
-      (folderId === null && folderContent.value.current_folder === null && folderContent.value.breadcrumbs.length > 0) ||
+      (folderId === null && (folderContent.value.current_folder === null || folderContent.value.current_folder.relative_path === '') && folderContent.value.breadcrumbs.length > 0) ||
       (folderId !== null && folderContent.value.current_folder?.id === folderId)
     );
 
@@ -195,9 +194,9 @@ export const useLibraryStore = defineStore('library', () => {
         clearSelection();
       }
 
-      // Asynchronously resolve missing folder covers in background chunks
+      // Asynchronously resolve missing folder covers in background chunks (skip known empty folders)
       const missingCoverIds = content.subfolders
-        .filter((f) => !f.cover_data_url)
+        .filter((f) => !f.cover_data_url && f.cover_status !== 'empty')
         .map((f) => f.id);
 
       if (missingCoverIds.length > 0) {
@@ -366,7 +365,7 @@ export const useLibraryStore = defineStore('library', () => {
         searchFolderResults.value = folders;
 
         const missingCoverIds = folders
-          .filter((f) => !f.cover_data_url)
+          .filter((f) => !f.cover_data_url && f.cover_status !== 'empty')
           .map((f) => f.id);
         if (missingCoverIds.length > 0) {
           resolveMissingFolderCovers(missingCoverIds, searchId);

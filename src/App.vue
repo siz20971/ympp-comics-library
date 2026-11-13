@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useLibraryStore } from './stores/libraryStore';
 import TopNav from './components/TopNav.vue';
 import BreadcrumbNav from './components/BreadcrumbNav.vue';
@@ -17,6 +18,117 @@ const store = useLibraryStore();
 const isSettingsOpen = ref(false);
 
 const contextMenuTarget = ref<ContextMenuTarget | null>(null);
+
+// Virtualized grid state
+const scrollContainerRef = ref<HTMLElement | null>(null);
+const contentWidth = ref(900);
+let resizeObserver: ResizeObserver | null = null;
+
+const GRID_GAP = 16;
+
+const columnCount = computed(() => {
+  return Math.max(1, Math.floor((contentWidth.value + GRID_GAP) / (store.cardMinWidth + GRID_GAP)));
+});
+
+const estimatedCardRowHeight = computed(() => {
+  const cols = columnCount.value;
+  const cardWidth = Math.max(100, (contentWidth.value - (cols - 1) * GRID_GAP) / cols);
+  return Math.round(cardWidth * (4 / 3) + 84);
+});
+
+type VirtualRow =
+  | { kind: 'section-header'; key: string; icon: 'layers' | 'book'; title: string; count: number }
+  | { kind: 'spacer'; key: string }
+  | { kind: 'folder-row'; key: string; items: FolderItem[] }
+  | { kind: 'comic-row'; key: string; items: ComicFileItem[] };
+
+function pushChunkedRows<T>(
+  rows: VirtualRow[],
+  items: T[],
+  cols: number,
+  kind: 'folder-row' | 'comic-row',
+  prefix: string
+) {
+  for (let i = 0; i < items.length; i += cols) {
+    const slice = items.slice(i, i + cols);
+    if (kind === 'folder-row') {
+      rows.push({ kind: 'folder-row', key: `${prefix}-${i}`, items: slice as FolderItem[] });
+    } else {
+      rows.push({ kind: 'comic-row', key: `${prefix}-${i}`, items: slice as ComicFileItem[] });
+    }
+  }
+}
+
+const virtualRows = computed<VirtualRow[]>(() => {
+  if (!store.library) return [];
+  const cols = columnCount.value;
+  const rows: VirtualRow[] = [];
+
+  if (store.mode === 'search') {
+    const folders = store.searchFolderResults;
+    const comics = store.searchResults;
+    if (folders.length > 0) {
+      rows.push({ kind: 'section-header', key: 's-hdr-f', icon: 'layers', title: '폴더 검색 결과', count: folders.length });
+      pushChunkedRows(rows, folders, cols, 'folder-row', `sf-${cols}`);
+      if (comics.length > 0) {
+        rows.push({ kind: 'spacer', key: 's-spacer' });
+      }
+    }
+    if (comics.length > 0) {
+      if (folders.length > 0) {
+        rows.push({ kind: 'section-header', key: 's-hdr-c', icon: 'book', title: '만화책 파일', count: comics.length });
+      }
+      pushChunkedRows(rows, comics, cols, 'comic-row', `sc-${cols}`);
+    }
+  } else {
+    const folders = store.folderContent.subfolders;
+    const comics = store.folderContent.files;
+    if (folders.length > 0) {
+      rows.push({ kind: 'section-header', key: 'b-hdr-f', icon: 'layers', title: '하위 폴더', count: folders.length });
+      pushChunkedRows(rows, folders, cols, 'folder-row', `bf-${store.currentFolderId ?? 'root'}-${cols}`);
+      if (comics.length > 0) {
+        rows.push({ kind: 'spacer', key: 'b-spacer' });
+      }
+    }
+    if (comics.length > 0) {
+      rows.push({ kind: 'section-header', key: 'b-hdr-c', icon: 'book', title: '만화책 목록', count: comics.length });
+      pushChunkedRows(rows, comics, cols, 'comic-row', `bc-${store.currentFolderId ?? 'root'}-${cols}`);
+    }
+  }
+
+  return rows;
+});
+
+const virtualizerOptions = computed(() => ({
+  count: virtualRows.value.length,
+  getScrollElement: () => scrollContainerRef.value,
+  estimateSize: (index: number) => {
+    const row = virtualRows.value[index];
+    if (!row) return 300;
+    if (row.kind === 'section-header') return 32;
+    if (row.kind === 'spacer') return 20;
+    return estimatedCardRowHeight.value;
+  },
+  overscan: 3,
+  getItemKey: (index: number) => virtualRows.value[index]?.key ?? index,
+}));
+
+const rowVirtualizer = useVirtualizer(virtualizerOptions);
+
+function measureVirtualRow(el: unknown) {
+  if (el instanceof Element) {
+    rowVirtualizer.value.measureElement(el);
+  }
+}
+
+watch(
+  [() => store.currentFolderId, () => store.mode],
+  () => {
+    if (scrollContainerRef.value) {
+      scrollContainerRef.value.scrollTop = 0;
+    }
+  }
+);
 
 function handleMouseUp(e: MouseEvent) {
   if (!store.library) return;
@@ -67,12 +179,26 @@ onMounted(() => {
   window.addEventListener('mouseup', handleMouseUp, { capture: true });
   window.addEventListener('mousedown', handleMouseDown, { capture: true });
   window.addEventListener('keydown', handleKeyDown);
+
+  if (scrollContainerRef.value) {
+    contentWidth.value = Math.max(200, scrollContainerRef.value.clientWidth - 48);
+    resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        contentWidth.value = Math.max(200, entry.contentRect.width - 48);
+      }
+    });
+    resizeObserver.observe(scrollContainerRef.value);
+  }
 });
 
 onUnmounted(() => {
   window.removeEventListener('mouseup', handleMouseUp, { capture: true });
   window.removeEventListener('mousedown', handleMouseDown, { capture: true });
   window.removeEventListener('keydown', handleKeyDown);
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
 });
 
 async function handlePickLibrary() {
@@ -165,7 +291,8 @@ function handleBackgroundContextMenu(e: MouseEvent) {
 
         <!-- Scrollable Grid Content -->
         <div
-          class="flex-1 overflow-y-auto p-6 scroll-smooth"
+          ref="scrollContainerRef"
+          class="flex-1 overflow-y-auto p-6"
           @contextmenu.prevent.stop="handleBackgroundContextMenu"
         >
           <!-- 1. No Library Selected View -->
@@ -191,35 +318,88 @@ function handleBackgroundContextMenu(e: MouseEvent) {
             </button>
           </div>
 
-          <!-- 2. Search Mode Results View -->
-          <template v-else-if="store.mode === 'search'">
-            <div
-              v-if="store.searchResults.length === 0 && store.searchFolderResults.length === 0"
-              class="h-full flex flex-col items-center justify-center text-neutral-500 gap-3 py-16"
+          <!-- 2. Search Mode Empty View -->
+          <div
+            v-else-if="store.mode === 'search' && store.searchResults.length === 0 && store.searchFolderResults.length === 0"
+            class="h-full flex flex-col items-center justify-center text-neutral-500 gap-3 py-16"
+          >
+            <SearchX class="w-12 h-12 stroke-[1.5]" />
+            <p class="text-xs">일치하는 만화책 또는 폴더가 없습니다.</p>
+            <button
+              @click="store.clearSearch"
+              class="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-300 cursor-pointer"
             >
-              <SearchX class="w-12 h-12 stroke-[1.5]" />
-              <p class="text-xs">일치하는 만화책 또는 폴더가 없습니다.</p>
+              검색 조건 초기화
+            </button>
+          </div>
+
+          <!-- 3. Browse Mode Empty Folder Notification -->
+          <div
+            v-else-if="store.mode === 'browse' && store.folderContent.subfolders.length === 0 && store.folderContent.files.length === 0"
+            class="h-64 flex flex-col items-center justify-center text-neutral-500 gap-3"
+          >
+            <BookOpen class="w-10 h-10 stroke-[1.5]" />
+            <p class="text-xs">이 폴더에 지원되는 만화책 압축 파일(ZIP/CBZ)이 없습니다.</p>
+            <div
+              v-if="store.folderContent.current_folder && store.folderContent.current_folder.relative_path !== ''"
+              class="flex items-center gap-2 mt-1"
+            >
               <button
-                @click="store.clearSearch"
-                class="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-300 cursor-pointer"
+                @click="store.openFolderInViewer(store.folderContent.current_folder.id)"
+                class="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium flex items-center gap-2 shadow-lg shadow-indigo-600/20 transition cursor-pointer"
               >
-                검색 조건 초기화
+                <Play class="w-3.5 h-3.5 fill-white" />
+                만화 뷰어로 현재 폴더 열기
+              </button>
+              <button
+                @click="store.showInFileManager(store.folderContent.current_folder.relative_path || '')"
+                class="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-medium flex items-center gap-1.5 transition border border-neutral-700 cursor-pointer"
+              >
+                <FolderSearch class="w-3.5 h-3.5" />
+                탐색기에서 열기
               </button>
             </div>
+          </div>
 
-            <div v-else class="space-y-8 pb-12">
-              <!-- Folders (Loose-image comics / series) -->
-              <div v-if="store.searchFolderResults.length > 0">
-                <h3 class="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <Layers class="w-3.5 h-3.5 text-indigo-400" />
-                  폴더 검색 결과 ({{ store.searchFolderResults.length }})
+          <!-- 4. Virtualized Grid (Browse & Search Results) -->
+          <div
+            v-else
+            class="relative w-full"
+            :style="{ height: `${rowVirtualizer.getTotalSize() + 48}px` }"
+          >
+            <div
+              v-for="vRow in rowVirtualizer.getVirtualItems()"
+              :key="String(vRow.key)"
+              :data-index="vRow.index"
+              :ref="measureVirtualRow"
+              class="absolute top-0 left-0 w-full"
+              :style="{ transform: `translateY(${vRow.start}px)` }"
+            >
+              <template v-if="virtualRows[vRow.index]">
+                <!-- Section Header -->
+                <h3
+                  v-if="virtualRows[vRow.index].kind === 'section-header'"
+                  class="text-xs font-bold text-neutral-400 uppercase tracking-wider pb-3 flex items-center gap-2"
+                >
+                  <Layers
+                    v-if="(virtualRows[vRow.index] as { icon: string }).icon === 'layers'"
+                    class="w-3.5 h-3.5 text-indigo-400"
+                  />
+                  <BookOpen v-else class="w-3.5 h-3.5 text-indigo-400" />
+                  {{ (virtualRows[vRow.index] as { title: string }).title }} ({{ (virtualRows[vRow.index] as { count: number }).count }})
                 </h3>
+
+                <!-- Spacer -->
+                <div v-else-if="virtualRows[vRow.index].kind === 'spacer'" class="h-5" />
+
+                <!-- Folder Row -->
                 <div
-                  class="grid gap-4"
-                  :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(${store.cardMinWidth}px, 1fr))` }"
+                  v-else-if="virtualRows[vRow.index].kind === 'folder-row'"
+                  class="grid gap-4 pb-4"
+                  :style="{ gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }"
                 >
                   <FolderCard
-                    v-for="sub in store.searchFolderResults"
+                    v-for="sub in (virtualRows[vRow.index] as { items: FolderItem[] }).items"
                     :key="sub.id"
                     :folder="sub"
                     :is-selected="store.selectedFolderId === sub.id"
@@ -228,23 +408,15 @@ function handleBackgroundContextMenu(e: MouseEvent) {
                     @contextmenu="handleFolderContextMenu"
                   />
                 </div>
-              </div>
 
-              <!-- Comic Files -->
-              <div v-if="store.searchResults.length > 0">
-                <h3
-                  v-if="store.searchFolderResults.length > 0"
-                  class="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-3 flex items-center gap-2"
-                >
-                  <BookOpen class="w-3.5 h-3.5 text-indigo-400" />
-                  만화책 파일 ({{ store.searchResults.length }})
-                </h3>
+                <!-- Comic File Row -->
                 <div
-                  class="grid gap-4"
-                  :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(${store.cardMinWidth}px, 1fr))` }"
+                  v-else-if="virtualRows[vRow.index].kind === 'comic-row'"
+                  class="grid gap-4 pb-4"
+                  :style="{ gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }"
                 >
                   <ComicCard
-                    v-for="comic in store.searchResults"
+                    v-for="comic in (virtualRows[vRow.index] as { items: ComicFileItem[] }).items"
                     :key="comic.id"
                     :comic="comic"
                     :is-selected="store.selectedComicId === comic.id"
@@ -253,84 +425,9 @@ function handleBackgroundContextMenu(e: MouseEvent) {
                     @contextmenu="handleComicContextMenu"
                   />
                 </div>
-              </div>
+              </template>
             </div>
-          </template>
-
-          <!-- 3. Browse Mode View -->
-          <template v-else>
-            <!-- Subfolders Section -->
-            <div v-if="store.folderContent.subfolders.length > 0" class="mb-8">
-              <h3 class="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                <Layers class="w-3.5 h-3.5 text-indigo-400" />
-                하위 폴더 ({{ store.folderContent.subfolders.length }})
-              </h3>
-              <div
-                class="grid gap-4"
-                :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(${store.cardMinWidth}px, 1fr))` }"
-              >
-                <FolderCard
-                  v-for="sub in store.folderContent.subfolders"
-                  :key="sub.id"
-                  :folder="sub"
-                  :is-selected="store.selectedFolderId === sub.id"
-                  @select-folder="store.selectFolder"
-                  @open-folder="store.loadFolder"
-                  @contextmenu="handleFolderContextMenu"
-                />
-              </div>
-            </div>
-
-            <!-- Comic Files Section -->
-            <div v-if="store.folderContent.files.length > 0">
-              <h3 class="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                <BookOpen class="w-3.5 h-3.5 text-indigo-400" />
-                만화책 목록 ({{ store.folderContent.files.length }})
-              </h3>
-              <div
-                class="grid gap-4 pb-12"
-                :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(${store.cardMinWidth}px, 1fr))` }"
-              >
-                <ComicCard
-                  v-for="comic in store.folderContent.files"
-                  :key="comic.id"
-                  :comic="comic"
-                  :is-selected="store.selectedComicId === comic.id"
-                  @select="store.selectComic"
-                  @open="store.openComic"
-                  @contextmenu="handleComicContextMenu"
-                />
-              </div>
-            </div>
-
-            <!-- Empty Folder Notification -->
-            <div
-              v-if="store.folderContent.subfolders.length === 0 && store.folderContent.files.length === 0"
-              class="h-64 flex flex-col items-center justify-center text-neutral-500 gap-3"
-            >
-              <BookOpen class="w-10 h-10 stroke-[1.5]" />
-              <p class="text-xs">이 폴더에 지원되는 만화책 압축 파일(ZIP/CBZ)이 없습니다.</p>
-              <div
-                v-if="store.folderContent.current_folder && store.folderContent.current_folder.relative_path !== ''"
-                class="flex items-center gap-2 mt-1"
-              >
-                <button
-                  @click="store.openFolderInViewer(store.folderContent.current_folder.id)"
-                  class="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium flex items-center gap-2 shadow-lg shadow-indigo-600/20 transition cursor-pointer"
-                >
-                  <Play class="w-3.5 h-3.5 fill-white" />
-                  만화 뷰어로 현재 폴더 열기
-                </button>
-                <button
-                  @click="store.showInFileManager(store.folderContent.current_folder.relative_path || '')"
-                  class="px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-medium flex items-center gap-1.5 transition border border-neutral-700 cursor-pointer"
-                >
-                  <FolderSearch class="w-3.5 h-3.5" />
-                  탐색기에서 열기
-                </button>
-              </div>
-            </div>
-          </template>
+          </div>
         </div>
       </main>
 
